@@ -19,7 +19,8 @@ cd web; npm install            # first time
 .\run.cmd                      # mockup at http://127.0.0.1:8781 (#insights #live #trace #timing #objects #memory #headroom #profile #tune #soak #helix #compare; ?theme=light)
 cd web; npx tsc --noEmit       # must stay clean
 # N6 register workbook (python -m venv .venv; .venv\Scripts\pip install -r host\svd\requirements.txt):
-.venv\Scripts\python -I host\svd\svd_workbook.py <STM32N657.svd> <zephyr tree at the pin> <out.xlsx>
+.venv\Scripts\python -I host\svd\svd_workbook.py <ST's stm32n6-svd.zip> <zephyr tree at the pin> <out.xlsx>
+.venv\Scripts\python -I host\svd\svd_workbook.py --check [<zip>]   # 0 current, 1 different SVD exists, 2 could not tell
 ```
 
 ## Architecture
@@ -35,7 +36,7 @@ cd web; npx tsc --noEmit       # must stay clean
 | `web/src/sim/` | Synthetic data: scheduler with kernel objects, jobs, PI plant and parameter registry (`target.ts`), heap model, N6 memory map, window queries (`query.ts`), job explanations, insight rules, soak run, profile tree |
 | `web/src/views/` | One file per dashboard view; `main.ts` builds the rail, `nav.ts` carries a focus between views, `dom.ts` and `icons.ts` the DOM chrome |
 | `docs/OBSERVABILITY_AND_SVD_REVIEW.md` | Zephyr observability services and the STM32N6 SVD measured against the plan; recommendations, corrections (applied), hardware questions |
-| `host/svd/svd_workbook.py` | Annotated STM32N657 register workbook from ST's SVD (not vendored; Apache-2.0) and the pinned devicetree; fails if a curated zprof signal names a register or field the SVD lacks |
+| `host/svd/svd_workbook.py` | Annotated STM32N657 register workbook from ST's SVD (not vendored; Apache-2.0) and the pinned devicetree; fails if a curated zprof signal names a register or field the SVD lacks; checks the SVD against its baseline and Arm's STM32N6xx_DFP. Provenance in `host/svd/README.md` |
 | `firmware/`, `host/` (bridge) | Planned (PLANS.md section 3), not started |
 
 ## Invariants & "do not regress"
@@ -47,6 +48,7 @@ cd web; npx tsc --noEmit       # must stay clean
 - Zephyr is pinned by SHA, never `revision: main`. **Why:** Build compare needs identical Zephyr on both sides; bumping the pin means re-checking spec section 3 sources.
 - Simulated quantities stay honest: link bytes use the PLANS.md CTF costs, memory regions come from the pinned devicetree, and anything else synthetic is labelled so. **Why:** the mockup is used to argue design trade-offs (link budget, write safety); fudged numbers would argue the wrong way.
 - Parameter suggestions ("Try") only stage values in Watch & Tune; writes need the arm switch and Apply. **Why:** the same UI will drive real hardware (spec section 14).
+- The SVD is not vendored and the update check never poses as a browser to reach st.com; it asks GitHub for Arm's DFP copy. **Why:** the user sources the SVD from ST to get its updates, and ST's site refuses non-browser clients on purpose.
 - No em dashes in docs or UI text (global rule).
 
 ## Open questions / known gaps

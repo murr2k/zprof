@@ -14,18 +14,32 @@ The workbook re-organizes ST's STM32N657.svd (Apache-2.0) for zprof work:
 
 Usage, from the repository root with the project venv:
 
-    .venv\\Scripts\\python -I host\\svd\\svd_workbook.py STM32N657.svd <zephyr> out.xlsx
+    .venv\\Scripts\\python -I host\\svd\\svd_workbook.py stm32n6-svd.zip <zephyr> out.xlsx
+    .venv\\Scripts\\python -I host\\svd\\svd_workbook.py --check [stm32n6-svd.zip]
 
-<zephyr> is a Zephyr tree at the SHA pinned in firmware/west.yml; it supplies
-the devicetree mapping (dts/arm/st/n6) and the DK's enabled nodes.
+The SVD is not in the repository: download ST's zip (host/svd/README.md has
+the source and the baseline) and pass it as is, or pass STM32N657.svd from
+it. The zip is read, never extracted. <zephyr> is a Zephyr tree at the SHA
+pinned in firmware/west.yml; it supplies the devicetree mapping
+(dts/arm/st/n6) and the DK's enabled nodes.
+
+Version check: every run compares the SVD with BASELINE, the one the curated
+tables were reviewed against, and unless --offline with the copy in Arm's
+STM32N6xx_DFP on GitHub, which repackages ST's SVD. ST's own site does not
+answer non-browser clients, so it cannot be polled. --check does only the
+comparison and exits 0 when current, 1 when a different SVD exists, 2 when it
+could not tell.
 """
 import argparse
 import datetime as dt
 import hashlib
+import json
 import re
 import subprocess
 import sys
+import urllib.request
 import xml.etree.ElementTree as ET
+import zipfile
 from collections import defaultdict
 from pathlib import Path
 
@@ -35,6 +49,15 @@ from openpyxl.styles import Alignment, Font, PatternFill
 from openpyxl.utils import get_column_letter
 
 REPO = Path(__file__).resolve().parents[2]
+
+# --- Provenance (host/svd/README.md) ---
+
+ST_SVD_URL = 'https://www.st.com/resource/en/svd/stm32n6-svd.zip'
+SVD_MEMBER = 'STM32N657.svd'
+# The SVD the curated tables were reviewed against. blob is git's object id of the
+# file with LF line endings, which is what GitHub lists, so a check downloads nothing.
+BASELINE = dict(package='STM32N6_svd_v1r0', version='1.0', blob='08fa4929eec6c1c6d3f69fab7f049c6b3e9e3997')
+DFP_REPO, DFP_DIR = 'Open-CMSIS-Pack/STM32N6xx_DFP', 'CMSIS/SVD'
 
 # --- Curated content: categories, our block descriptions, zprof relevance ---
 
@@ -317,8 +340,10 @@ READ_EFFECTS_RE = {'MDF1': (r'_DFLT\d+DR$', 'pops the filter output FIFO'), 'ADF
 READ_CARE = {'RTC': {'RTC_SSR': 'locks the calendar shadow registers until RTC_DR is read',
                      'RTC_TR': 'locks the calendar shadow registers until RTC_DR is read'}}
 
-# Defects found by reading, which svd_defects() cannot detect.
-KNOWN_DEFECTS = ['DBGMCU_APB4FZ1.DBG_IWDG_STOP is described as "WWDG stop in debug"; its enumerated values say IWDG.']
+# Defects found by reading, which svd_defects() cannot detect: (block, register, field,
+# wrong text in the field description, report). One that ST fixes drops out.
+KNOWN_DEFECTS = [('DBGMCU', 'DBGMCU_APB4FZ1', 'DBG_IWDG_STOP', 'WWDG',
+                  'DBGMCU_APB4FZ1.DBG_IWDG_STOP is described as "WWDG stop in debug"; its enumerated values say IWDG.')]
 
 MOD_WRITE = {'oneToClear': 'write 1 clears', 'oneToSet': 'write 1 sets', 'oneToToggle': 'write 1 toggles', 'zeroToClear': 'write 0 clears',
              'zeroToSet': 'write 0 sets', 'zeroToToggle': 'write 0 toggles', 'clear': 'any write clears', 'set': 'any write sets', 'modify': 'a write modifies'}
@@ -417,8 +442,8 @@ def expand(el, base_off, defaults):
                    fields=parse_fields(el, access))
 
 
-def load_svd(path):
-    root = ET.parse(path).getroot()
+def load_svd(data):
+    root = ET.fromstring(data)
     dev_defaults = inherit({}, root)
     elems = {txt(p, 'name'): p for p in root.find('peripherals').findall('peripheral')}
     blocks, irqs = {}, defaultdict(list)
@@ -448,10 +473,84 @@ def load_svd(path):
                 blocks[owner]['irqs'].append((n, it['name']))
     cpu = root.find('cpu')
     meta = dict(name=txt(root, 'name'), version=txt(root, 'version'), cpu={c.tag: (c.text or '').strip() for c in cpu} if cpu is not None else {})
-    head = Path(path).read_text(encoding='utf-8', errors='replace')[:3000]
-    m = re.search(r'<!--(.*?)-->', head, re.S)
+    m = re.search(r'<!--(.*?)-->', data[:3000].decode('utf-8', 'replace'), re.S)
     meta['notice'] = ' '.join(m[1].split()) if m else ''
     return blocks, irqs, meta
+
+
+# --- Input and version check ---
+
+def bad_input(msg):
+    print(msg, file=sys.stderr)
+    sys.exit(2)
+
+
+def read_svd(path):
+    """SVD bytes, ST's package name and a source label, from ST's zip or a bare .svd."""
+    if zipfile.is_zipfile(path):
+        with zipfile.ZipFile(path) as z:
+            hits = [i for i in z.infolist() if i.filename.rsplit('/', 1)[-1] == SVD_MEMBER]
+            if len(hits) != 1 or hits[0].file_size > 200 << 20:
+                bad_input(f'{path}: expected one {SVD_MEMBER} under 200 MB, found {len(hits)}')
+            data, package, source = z.read(hits[0]), hits[0].filename.rpartition('/')[0], f'{path.name}: {hits[0].filename}'
+    else:
+        package = path.resolve().parent.name
+        data, package, source = path.read_bytes(), package if re.fullmatch(r'\w+_svd_v\d+r\d+', package) else '', path.name
+    if not re.search(rb'<name>\s*' + SVD_MEMBER[:-4].encode() + rb'\s*</name>', data[:4000]):
+        bad_input(f'{path}: not the {SVD_MEMBER[:-4]} SVD')
+    return data, package, source
+
+
+def svd_id(data):
+    """(git blob of the file with LF line endings, SVD version)."""
+    lf = data.replace(b'\r\n', b'\n')
+    m = re.search(rb'<version>\s*([^<]*?)\s*</version>', data[:4000])
+    return hashlib.sha1(b'blob %d\0' % len(lf) + lf).hexdigest(), m[1].decode() if m else 'unknown'
+
+
+def github(path):
+    req = urllib.request.Request(f'https://api.github.com/repos/{DFP_REPO}/{path}',
+                                 headers={'Accept': 'application/vnd.github+json', 'User-Agent': 'zprof-svd-workbook'})
+    with urllib.request.urlopen(req, timeout=15) as r:
+        return json.load(r)
+
+
+def check_version(blob, version, package, online):
+    """(status, findings): 0 current, 1 a different SVD exists, 2 could not tell."""
+    base = f"{BASELINE['package']} (SVD version {BASELINE['version']}, blob {BASELINE['blob'][:12]})"
+    if blob == BASELINE['blob']:
+        status, out = 0, [f'the SVD is the baseline, {base}']
+    else:
+        status, out = 1, [f"the SVD is {package or 'from an unknown package'} (SVD version {version}, blob {blob[:12]}), not the baseline {base}: "
+                          're-review the curated tables, then update BASELINE and host/svd/README.md']
+    if not online:
+        return status, out + ["Arm's DFP not checked (--offline)"]
+    try:
+        dfp = next((e['sha'] for e in github(f'contents/{DFP_DIR}') if e['name'] == SVD_MEMBER), None)
+        if dfp is None:
+            raise ValueError(f'no {DFP_DIR}/{SVD_MEMBER} there')
+        when = github(f'commits?path={DFP_DIR}/{SVD_MEMBER}&per_page=1')[0]['commit']['committer']['date'][:10]
+    except (OSError, ValueError, KeyError, IndexError) as e:
+        return status or 2, out + [f"could not read Arm's DFP ({DFP_REPO}): {e}"]
+    if dfp == blob:
+        out.append(f"Arm's {DFP_REPO} has the same {SVD_MEMBER} (last changed there {when})")
+    elif dfp == BASELINE['blob']:
+        out.append(f"Arm's {DFP_REPO} still has the baseline (last changed there {when}): the input is newer than the DFP, or modified")
+    else:
+        status = 1
+        out.append(f"Arm's {DFP_REPO} has a different {SVD_MEMBER} since {when} (blob {dfp[:12]}): ST has probably released an update, "
+                   f'download {ST_SVD_URL}')
+    return status, out
+
+
+def known_defects(blocks):
+    out = []
+    for blk, reg, field, wrong, text in KNOWN_DEFECTS:
+        r = next((r for r in blocks[blk]['regs'] if r['name'] == reg), None) if blk in blocks else None
+        f = next((f for f in r['fields'] if f['name'] == field), None) if r else None
+        if f and wrong in f['desc']:
+            out.append(text)
+    return out
 
 
 # --- Zephyr devicetree at the pin ---
@@ -655,12 +754,31 @@ def add_sheet(wb, title, columns, widths, rows, wrap=False, freeze='B2'):
 
 def main():
     ap = argparse.ArgumentParser(description=__doc__.split('\n')[0])
-    ap.add_argument('svd', type=Path)
-    ap.add_argument('zephyr', type=Path)
-    ap.add_argument('out', type=Path)
+    ap.add_argument('svd', type=Path, nargs='?', help="ST's stm32n6-svd.zip, or STM32N657.svd from it")
+    ap.add_argument('zephyr', type=Path, nargs='?')
+    ap.add_argument('out', type=Path, nargs='?')
+    ap.add_argument('--check', action='store_true', help='only compare the SVD (or the baseline) with Arm\'s DFP')
+    ap.add_argument('--offline', action='store_true', help="do not ask GitHub for Arm's DFP")
     a = ap.parse_args()
 
-    blocks, irqs, meta = load_svd(a.svd)
+    if a.check:
+        if a.svd:
+            data, package, _ = read_svd(a.svd)
+            blob, version = svd_id(data)
+        else:
+            blob, version, package = BASELINE['blob'], BASELINE['version'], BASELINE['package']
+        status, out = check_version(blob, version, package, not a.offline)
+        print('\n'.join(out))
+        sys.exit(status)
+    if not (a.svd and a.zephyr and a.out):
+        ap.error('svd, zephyr and out are required unless --check')
+
+    data, package, source = read_svd(a.svd)
+    blob, version = svd_id(data)
+    _, vcheck = check_version(blob, version, package, not a.offline)
+    for line in vcheck:
+        print('version check:', line, file=sys.stderr)
+    blocks, irqs, meta = load_svd(data)
     soc_nodes, board_status, zsha = zephyr_info(a.zephyr)
     pin = pinned_sha()
     if pin and not zsha.startswith(pin[:12]):
@@ -708,7 +826,7 @@ def main():
     nreg = sum(len(b['regs']) for b in order)
     nfld = sum(len(r['fields']) for b in order for r in b['regs'])
     unused_effects = {n for t in READ_EFFECTS.values() for n in t} - {r['name'] for b in order for r in b['regs']}
-    defects = svd_defects(blocks) + KNOWN_DEFECTS
+    defects = svd_defects(blocks) + known_defects(blocks)
 
     def lookup(table, name, suffix):
         for cand in (name, RCC_ALIAS.get(name)):
@@ -780,7 +898,7 @@ def main():
                    reg['access'], ', '.join(map(str, s['irq'])), s['read_by'], s['when'], s['zephyr'], s['source'], s['notes']]
 
     wb = Workbook(write_only=True)
-    sha = hashlib.sha256(a.svd.read_bytes()).hexdigest()
+    sha = hashlib.sha256(data).hexdigest()
     about = wb.create_sheet('About')
     about.column_dimensions['A'].width = 24
     about.column_dimensions['B'].width = 120
@@ -790,7 +908,9 @@ def main():
         ('What', "ST's STM32N657 SVD re-organized and annotated for zprof: each block with both bus aliases, clock, reset, debug freeze and its Zephyr "
                  'node; every register and field with absolute addresses; the interrupt table with exception numbers; the signals zprof reads, '
                  'checked against the SVD; and the Arm core and trace registers the SVD leaves out.'),
-        ('Source', f"{a.svd.name}, {meta['name']} SVD version {meta['version']} (ST package STM32N6_svd_v1r0, files dated 2024-10-10); sha256 {sha}"),
+        ('Source', f"{source}, {meta['name']} SVD version {meta['version']} (ST package {package or 'unknown'}, {ST_SVD_URL}); "
+                   f'sha256 {sha}, git blob {blob}'),
+        ('Version check', f'{dt.date.today().isoformat()}: ' + '; '.join(vcheck)),
         ('License', f"{meta['notice']} Text in the SVD description columns is ST's. Columns named zprof, Description (zprof), Category, "
                     'the signals and the Not in SVD tab are ours.'),
         ('CPU block', f"{cpu.get('name', '')} revision {cpu.get('revision', '')}, FPU {cpu.get('fpuPresent', '')}, MPU {cpu.get('mpuPresent', '')} "

@@ -19,6 +19,14 @@ and a dashboard mockup on synthetic data; no firmware or bridge has shipped.
   addresses, read side effects and write semantics; interrupts with the
   exception number IPSR reports; the registers zprof reads, checked against
   the SVD; and the Arm core and trace registers the SVD leaves out.
+- SVD version check in the generator: each run compares the SVD with the
+  baseline the curated tables were reviewed against and with the copy in
+  Arm's STM32N6xx_DFP on GitHub (ST's site refuses non-browser clients), and
+  writes the result to the About tab; `--check` does only that, for scripts.
+  The generator reads ST's zip as downloaded. Provenance of both inputs in
+  `host/svd/README.md`; the SVD stays out of the repository.
+- Known SVD defects are checked against the SVD, so one that ST fixes drops
+  out of the report.
 
 ### Changed
 

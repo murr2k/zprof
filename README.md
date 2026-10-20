@@ -141,7 +141,7 @@ labelled so.
 | `docs/DASHBOARD_SPEC.md` | Users, data model, parameter catalog, views, interaction, thresholds, Sferic mapping, platform comparison, hybrid views (section 13), write path (section 14) |
 | `docs/OBSERVABILITY_AND_SVD_REVIEW.md` | What Zephyr's observability services and the STM32N6 SVD add, with ranked recommendations |
 | `config/` | Thresholds file and its schema |
-| `host/svd/` | Generator for the annotated STM32N657 register workbook (from ST's SVD and the pinned devicetree) |
+| `host/svd/` | Generator for the annotated STM32N657 register workbook (from ST's SVD and the pinned devicetree), with an update check; the README there says where the inputs come from |
 | `firmware/west.yml` | Zephyr pin and module allowlist |
 | `web/src/charts/` | New Sferic panels: IntervalSeries, KpiStrip, BulletChart, SequenceTrace, AnatomyChart, PhaseFold, FlowGraph, AddressMap, HeapXRay |
 | `web/src/sim/` | Simulated target, heap model, memory map, window queries, explanations, insight rules, soak run, profile |
