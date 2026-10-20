@@ -18,6 +18,8 @@ dashboard mockup on synthetic data exist; no firmware or bridge yet.
 cd web; npm install            # first time
 .\run.cmd                      # mockup at http://127.0.0.1:8781 (#insights #live #trace #timing #objects #memory #headroom #profile #tune #soak #helix #compare; ?theme=light)
 cd web; npx tsc --noEmit       # must stay clean
+# N6 register workbook (python -m venv .venv; .venv\Scripts\pip install -r host\svd\requirements.txt):
+.venv\Scripts\python -I host\svd\svd_workbook.py <STM32N657.svd> <zephyr tree at the pin> <out.xlsx>
 ```
 
 ## Architecture
@@ -32,7 +34,9 @@ cd web; npx tsc --noEmit       # must stay clean
 | `web/src/charts/` | New Sferic-paradigm panels: `IntervalSeries` (timeline / flame), `KpiStrip`, `BulletChart`, `SequenceTrace` (vertical trace), `AnatomyChart`, `PhaseFold` (eye, raster), `FlowGraph`, `AddressMap`, `HeapXRay` |
 | `web/src/sim/` | Synthetic data: scheduler with kernel objects, jobs, PI plant and parameter registry (`target.ts`), heap model, N6 memory map, window queries (`query.ts`), job explanations, insight rules, soak run, profile tree |
 | `web/src/views/` | One file per dashboard view; `main.ts` builds the rail, `nav.ts` carries a focus between views, `dom.ts` and `icons.ts` the DOM chrome |
-| `firmware/`, `host/` | Planned (PLANS.md section 3), not started |
+| `docs/OBSERVABILITY_AND_SVD_REVIEW.md` | Zephyr observability services and the STM32N6 SVD measured against the plan; recommendations, corrections (applied), hardware questions |
+| `host/svd/svd_workbook.py` | Annotated STM32N657 register workbook from ST's SVD (not vendored; Apache-2.0) and the pinned devicetree; fails if a curated zprof signal names a register or field the SVD lacks |
+| `firmware/`, `host/` (bridge) | Planned (PLANS.md section 3), not started |
 
 ## Invariants & "do not regress"
 

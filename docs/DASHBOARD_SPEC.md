@@ -182,7 +182,7 @@ from section 2.2.
 
 | ID | Parameter | Unit | Source | Class | Dev | QA |
 |---|---|---|---|---|---|---|
-| `cpu.load` | CPU load | % | `cpu_load_get(bool reset)`, per mille. ISR time is included only by the idle-hook backend (single CPU); the runtime-stats backend (SMP default) excludes it | H | ● | ● |
+| `cpu.load` | CPU load | % | `cpu_load_get(bool reset)`, per mille. ISR time is included only by the idle-hook backend (single CPU; can time with a counter device, `CONFIG_CPU_LOAD_USE_COUNTER`); the runtime-stats backend (SMP default) excludes it. The KPI label names the backend. `cpu_load_cb_reg(cb, threshold_percent)` calls back when load crosses a threshold; the agent raises an overload Event from it | H | ● | ● |
 | `cpu.<n>.busy` | Per-CPU busy share (SMP) | % | `k_thread_runtime_stats_cpu_get()`; needs `SCHED_THREAD_USAGE_ALL` or it silently returns zeros | H | ● | ○ |
 | `thread.<t>.cpu` | CPU share per thread (ISR time folded in) | % | `k_thread_runtime_stats_get()`, `execution_cycles` delta | H | ● | ● |
 | `thread.<t>.run_avg`, `.run_peak` | Average and peak execution window | us | `average_cycles`, `peak_cycles` (`CONFIG_SCHED_THREAD_USAGE_ANALYSIS`) | H | ● | ○ |
@@ -276,9 +276,9 @@ retained / no-init RAM and reported on the next boot.
 | `can.<n>.err` | TX/RX error counters, state, bus-off count; bit / stuff / CRC / form / ACK errors, RX overruns | count | `can_get_state()`, `can_stats_get_*()` (`CONFIG_CAN_STATS`) | H | ○ | ● |
 | `net.*` | RX/TX bytes and packets, errors, drops, TCP retransmits | count, B | `CONFIG_NET_STATISTICS` and `_USER_API`, `net_mgmt(NET_REQUEST_STATS_GET_ALL)`; Ethernet MAC counters via `_ETHERNET` | H | ○ | ● |
 | `net.pkt_lat` | Per-packet TX / RX latency through the stack | us | `CONFIG_NET_PKT_TXTIME_STATS`, `_RXTIME_STATS` (need `NET_PKT_TIMESTAMP`; `_DETAIL` enlarges every packet) | H | ● | ○ |
-| `bus.<dev>.err` | I2C NACK, SPI and flash timeouts, retries | count | no generic API: driver STATS groups or application wrappers | H | ○ | ● |
+| `bus.<dev>.err` | I2C NACK, SPI and flash timeouts, retries | count | no generic API: driver STATS groups or application wrappers. On the N6 the per-block flags are in the SVD: `SPI_SR` `OVR`, `UDR`, `CRCE`, `MODF`, `TIFRE`; `I2C_ISR` `NACKF`, `BERR`, `ARLO`, `OVR`, `PECERR`, `TIMEOUT`. Count them on the driver's error path; sampling the status register misses flags the ISR already cleared | H | ○ | ● |
 | `usb.event` | Bus reset, suspend, enumeration | event | USB device stack callbacks | E | ○ | ● |
-| `dma.<ch>.err` | DMA error completions | count | DMA callback status | H | ○ | ● |
+| `dma.<ch>.err` | DMA error completions | count | DMA callback status; on the N6 the cause from `HPDMA_CxSR` / `GPDMA_CxSR`: `DTEF` transfer error, `ULEF` link update error, `USEF` user setting error, `TOF` timeout | H | ○ | ● |
 
 ### 3.9 Power, clocks and environment
 
@@ -286,8 +286,8 @@ retained / no-init RAM and reported on the next boot.
 |---|---|---|---|---|---|---|
 | `pm.device.<d>` | Device runtime PM state and usage count | enum | `pm_device_runtime_usage()` (`CONFIG_PM_DEVICE_RUNTIME`) | H | ○ | |
 | `clk.cpu` | CPU clock | Hz | hello, or `clock_control_get_rate()` on change | S/H | ○ | ○ |
-| `env.die` | Die temperature | C | `SENSOR_CHAN_DIE_TEMP` where the SoC has a driver; `main` has none for either target (no XADC / SYSMON / AMS for Zynq, no STM32N6 digital temperature sensor) | H | ● | ● |
-| `env.rail.<n>` | Supply voltages | V | ADC or SoC system monitor | H | ○ | ● |
+| `env.die` | Die temperature | C | `SENSOR_CHAN_DIE_TEMP` where the SoC has a driver; `main` has none for either target (no XADC / SYSMON / AMS for Zynq, no STM32N6 digital temperature sensor). On the N6 the agent reads the DTS itself (`DTS_TS0SDIFDATAR`, `DTS_TS1SDIFDATAR`; conversion per RM0486 33), and its alarm interrupt becomes an Event | H | ● | ● |
+| `env.rail.<n>` | Supply voltages | V | ADC or SoC system monitor. On the N6, out-of-range flags from PWR: `PWR_CR3` `VCOREL` / `VCOREH`, `PWR_CR2` `PVDO`, `PWR_BDCR1` `VBATL` / `VBATH` / `TEMPL` / `TEMPH`, `PWR_SVMCR1..3` ready flags | H | ○ | ● |
 | `env.chamber` | Chamber temperature and humidity | C, %RH | chamber controller | X | ○ | ● |
 | `pwr.*` | Supply current, power, energy per operation | A, W, J | power analyzer | X | ● | ● |
 
@@ -825,16 +825,18 @@ Zynq probe rows from PLANS.md section 2.6.
 | RTT link | yes once debug is open: J-Link / J-Trace on CN10 (MIPI-20), or ST-LINK via mainline OpenOCD `stlink-dap`; secure AP accesses; buffers in non-cacheable RAM | needs AHB/AXI-AP and non-cacheable buffers | not supported by SEGGER | no |
 | Fast link without the debugger | USB HS device (CDC ACM), Ethernet RGMII (RTL8211F); VCP documented only at 115200 | Ethernet (GEM) | Ethernet (GEM) | pty / TCP |
 | Instruction trace (zero-overhead profile) | ETM 4-bit on CN10 (TRACECLK PG7, TRACED0-3), shared with SAI1 pins that Zephyr's DT enables; SWO on PB5; J-Trace PRO supports N6 | PTM/ETM via TPIU or ETB | ETM, ETB | no |
-| Sampling profiler (`CONFIG_PROFILING_PERF`) | yes (SysTick; needs `SHELL`, `EXTRA_EXCEPTION_INFO`) | **no** | yes (frame pointers) | QEMU x86, RISC-V, Cortex-M, A53: yes; `native_sim`: no |
+| Sampling profiler (`CONFIG_PROFILING_PERF`) | yes: the Cortex-M backend samples from SysTick; needs `SHELL`, `CORTEX_M_SYSTICK`, `THREAD_STACK_INFO`, `ARCH_STACKWALK` (on Cortex-M that needs `EXTRA_EXCEPTION_INFO`), a Secure or non-TrustZone image (the DK's is Secure) and no SMP | **no** | yes (frame pointers) | QEMU x86, RISC-V, Cortex-M, A53: yes; `native_sim`: no |
 | PMU counter API | DWT only (the ARMv8.1-M PMU is not enabled) | **none** | PMUv3 API | no |
 | Coredump | yes | **no** | yes | arch-dependent |
 | HW stack overflow protection | yes: PSPLIM stack guard, on by default | **no** (canaries, sentinel only) | no | no |
 | Fault registers in the fatal record | CFSR, HFSR, MMFAR, BFAR | DFSR, DFAR, IFSR, IFAR | ESR, FAR | n/a |
-| Reset cause (hwinfo) | yes (`hwinfo_stm32`): pin, software, IWDG, WWDG, brownout, POR, low power; the lockup flag exists but is not mapped | **no driver**: agent reads `slcr.REBOOT_STATUS` (7000) or the ZynqMP reset-reason register (*unverified*) | no driver | none |
+| Reset cause (hwinfo) | yes (`hwinfo_stm32`): pin, software, IWDG, WWDG, brownout, POR, low power; the lockup flag exists but is not mapped (only STM32WB0 maps it), so the agent reads `RCC_RSR.LCKRSTF` (bit 17, ST SVD) itself | **no driver**: agent reads `slcr.REBOOT_STATUS` (7000) or the ZynqMP reset-reason register (*unverified*) | no driver | none |
 | Watchdog driver | IWDG enabled (`watchdog0`); WWDG present, disabled | **no PS watchdog driver**; the AXI Timebase WDT in the PL has one | same | n/a |
 | Retained RAM for the fault record | backup SRAM, 8 KB, non-cacheable (disabled by default) | OCM, to configure | to configure | n/a |
-| Power-state statistics | **none**: `CONFIG_PM` is not available on N6 | not checked | not checked | n/a |
-| Die temperature, rails | **no driver** (the silicon has a digital temperature sensor, RM0486 33); ADC gives VBAT and VDDCORE | **no XADC / SYSMON driver** | no SYSMON driver | none |
+| Power-state statistics | **none** in Zephyr: `CONFIG_PM` is not available on N6. The agent can count Stop and Standby entries from `PWR_CPUCR` (`STOPF`, `SBF`, cleared with `CSSF`) | not checked | not checked | n/a |
+| Die temperature, rails | **no driver** (the silicon has a digital temperature sensor, RM0486 33); ADC gives VBAT and VDDCORE. The agent reads the DTS directly (two sensors with alarm thresholds) and the PWR monitor flags (VCORE low / high, PVD, VBAT and backup-domain temperature, per-rail ready); register positions from ST's SVD | **no XADC / SYSMON driver** | no SYSMON driver | none |
+| Latency oracle (zyclictest) | yes: needs `TIMER_HAS_64BIT_CYCLE_COUNTER`, which SysTick provides by default above 60 MHz | Zynq-7000 A9: yes (Arm architected timer driver on the global timer); ZynqMP R5: **no** (the PS TTC driver has no 64-bit counter) | yes (Arm architected timer) | not checked |
+| On-chip trace capture | STM (software stimulus ports, hardware timestamps) and an ETR that writes the merged trace into system RAM (RM0486 78); Zephyr has the `arm,stmesp` binding, the STP decoder and the CoreSight deformatter, but no N6 STM node or ETR setup driver | ETB (see instruction trace) | ETB | no |
 | gcov coverage on target | not opted in (`FORCE_COVERAGE` only) | no AMD/Xilinx board opts in | same | QEMU Cortex-A53 opts in |
 | Thermal and voltage DVT | yes | yes | yes | not meaningful |
 
@@ -845,8 +847,8 @@ to power-cycle and observe the DUT that does not depend on the DUT.
 What each target needs before the Reliability views are complete:
 
 - **STM32N6570-DK:** almost all of section 3 comes from stock Zephyr. Missing:
-  a die-temperature driver, power-state statistics, and an opt-in to reopen
-  debug in Flash boot. Without that opt-in, RTT and instruction trace only work
+  a die-temperature driver and power-state statistics (the agent covers both
+  with direct register reads), and an opt-in to reopen debug in Flash boot. Without that opt-in, RTT and instruction trace only work
   in Development boot. The agent provides it as a Kconfig option. The bridge
   falls back to USB CDC ACM when no probe can attach.
 - **Zynq PS:** the Engineering views work as planned, but about a third of the
@@ -864,9 +866,10 @@ Still open:
 
 - Per-IRQ identity on Cortex-A/R: where to read the active IRQ in the GIC path
   without a second acknowledge.
-- `cpu_load` semantics per backend: confirm on the chosen target which backend
-  is selected and whether its number includes ISR time, before labelling the
-  KPI.
+- `cpu_load` backend per target: the idle-hook backend includes ISR time and
+  the runtime-stats backend excludes it (Zephyr docs), so the KPI is labelled
+  with its backend. Still to confirm: which backend each target's build
+  selects.
 - Whether `uart_err_check()` clears the error flags on read, per driver.
 - Whether debugger reads and writes through the M55's AHB-AP (AP1, entering
   the core's D-AHB port) are coherent with the L1 D-cache; until known, every
@@ -883,6 +886,10 @@ Still open:
   `slcr.REBOOT_STATUS`, UG585).
 - Report format for QA sign-off (criteria are decided: they live in the
   thresholds file, section 7.2).
+- N6 hardware questions from the observability review: STM and ETR use with
+  debug closed, the STM timestamp clock, the DTS conversion, which ECC events
+  reach software, RIF and probe reads, TCM sizes left by the FSBL
+  ([OBSERVABILITY_AND_SVD_REVIEW.md](OBSERVABILITY_AND_SVD_REVIEW.md) section 8).
 
 Things that changed on `main` relative to the last release, which the agent
 must use as written here: the assert hook is `zassert_post_action()` (not

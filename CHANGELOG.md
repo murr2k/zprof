@@ -7,6 +7,32 @@ and a dashboard mockup on synthetic data; no firmware or bridge has shipped.
 
 ## [Unreleased]
 
+### Added
+
+- `docs/OBSERVABILITY_AND_SVD_REVIEW.md`: what Zephyr's observability
+  services and ST's STM32N6 SVD add to fidelity, features and testing, with
+  16 ranked recommendations; the first is a spike on the N6's on-chip STM and
+  ETR as the event-trace path.
+- `host/svd/svd_workbook.py`: builds an annotated STM32N657 register workbook
+  from ST's SVD: every block with both bus aliases, clock enable, reset,
+  debug freeze and its Zephyr node at the pin; every register and field with
+  addresses, read side effects and write semantics; interrupts with the
+  exception number IPSR reports; the registers zprof reads, checked against
+  the SVD; and the Arm core and trace registers the SVD leaves out.
+
+### Changed
+
+- DASHBOARD_SPEC.md section 11: the perf sampler's real requirements
+  (`CORTEX_M_SYSTICK`, `THREAD_STACK_INFO`, `ARCH_STACKWALK`, which on
+  Cortex-M needs `EXTRA_EXCEPTION_INFO`, a Secure image, no SMP); new rows for
+  zyclictest and on-chip trace; N6 die temperature, rail flags, Stop / Standby
+  entries and the lockup reset flag read by the agent directly.
+- DASHBOARD_SPEC.md sections 3.3, 3.8, 3.9 and 12: the `cpu_load` threshold
+  callback and backend label; N6 SPI, I2C and DMA error sources; DTS and PWR
+  sources; the N6 hardware questions.
+- PLANS.md: the trace format is a Phase A decision between CTF, a zprof
+  format and the N6 STM, with the trade-offs in section 8.
+
 ## [0.2.0] - 2026-10-20
 
 The hybrid dashboard: Tracealyzer-style analysis views mixed with new GPU

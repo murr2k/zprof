@@ -40,7 +40,7 @@ Planned order: **B** (statistics), then **A** (trace timeline), then **D**
 | MCUmgr taskstat | Thread table over SMP | `CONFIG_MCUMGR_GRP_OS_TASKSTAT` | `runtime` field omitted unless `CONFIG_MCUMGR_GRP_OS_TASKSTAT_ONLY_SUPPORTED_STATS=n`. Request/response, heavy framing. Not a good live feed. |
 | CTF tracing | Event stream: thread switch in/out, create, ready, pend, sleep, priority, ISR enter/exit, idle, kernel objects (372 event types in current TSDL) | `CONFIG_TRACING`, `CONFIG_TRACING_CTF`, `CONFIG_TRACING_CTF_TIMESTAMP` | Header is `uint64 timestamp` (from `timing_ns_get()`, so ns) + `uint16 id`, little-endian, packed. Backends: UART, USB, POSIX file, RAM, semihost, ITM, ADSP window. Sync or async (ring buffer up to 64 KiB). |
 | Custom tracing backend | Route the CTF byte stream anywhere | `TRACING_BACKEND_DEFINE(name, api)` with `init` + `output(backend, data, len)`; selected by `CONFIG_TRACING_BACKEND_NAME` | Iterable section, so an out-of-tree module can register one. |
-| Custom tracing format | Replace CTF entirely | `CONFIG_TRACING_FORMAT_HEADER`, `CONFIG_TRACING_USER` | Escape hatch if CTF bandwidth becomes the limit (section 8). |
+| Custom tracing format | Replace CTF entirely | `CONFIG_TRACING_FORMAT_HEADER`, `CONFIG_TRACING_USER` | Exclusive with CTF: `TRACING_FORMAT_CHOICE` holds CTF and `TRACING_USER`, and the header option applies when neither is selected, so a build carries one format. User hooks receive the object pointers (`sys_trace_k_mutex_lock_enter_user(struct k_mutex *, k_timeout_t)`). A Phase A decision (section 8). |
 | Instrumentation subsystem | Function entry/exit via `-finstrument-functions` | `CONFIG_INSTRUMENTATION`, modes `_MODE_CALLGRAPH` (trace) and `_MODE_STATISTICAL` (top-N functions, default 256, max 4096) | Merged 2025-10-05 (PR #91595), in 4.3+. GCC only. Transport is UART only (`subsys/instrumentation/transport/uart.c`) and it selects `UART_CONSOLE`. Dynamic trigger/stopper needs a `zephyr,retained-ram` DT node and reboot. Tested on ARM32 boards and `mps2_an385` QEMU. |
 
 ### 2.2 Host tooling already in the Zephyr tree
@@ -139,7 +139,7 @@ the `ap=1` line is still in `board.cmake` at a915b2f1.
 
 | Fact | Source |
 |---|---|
-| Parts ship BSEC-closed. In Flash boot (BOOT0 = BOOT1 = L) debug stays closed until secure-privileged code writes `BSEC_DBGCR.DBG_UNLOCK = 0xB4` and `BSEC_AP_UNLOCK = 0xB4`, once per reset; hot plug is impossible otherwise. Nothing in Zephyr writes them. So RTT and trace in normal running need our firmware to open debug. | RM0486 3.9, 4.5.18-19, 78.7.1; `git grep` at a915b2f1 |
+| Parts ship BSEC-closed. In Flash boot (BOOT0 = BOOT1 = L) debug stays closed until secure-privileged code writes `BSEC_DBGCR.DBG_UNLOCK = 0xB4` and `BSEC_AP_UNLOCK = 0xB4`, once per reset; hot plug is impossible otherwise. Nothing in Zephyr writes them. So RTT and trace in normal running need our firmware to open debug. The offsets (BSEC +0xE8C and +0xE90; BSEC at 0x46009000, secure alias 0x56009000) match ST's SVD V1.0. | RM0486 3.9, 4.5.18-19, 78.7.1; `git grep` at a915b2f1; `STM32N657.svd` |
 | CN10 is a MIPI-20 connector for an external J-Link / J-Trace: SWD, SWO (PB5), and 4-bit ETM (TRACECLK PG7, TRACED0-3 on PE3/PB0/PB6/PB7 through solder bridges). The trace pins are shared with SAI1, which Zephyr's board DT enables. | UM3300 8.8 Table 17; schematic p.20 |
 | SEGGER lists STM32N657X0 as supported, and J-Trace PRO tracing for STM32N6 was announced in June 2025. OpenOCD has `stm32n6x.cfg` on mainline only (no release); use `stlink-dap`, not `hla`. The M55 is on AP1, which resets to non-secure accesses, while Zephyr runs at the secure RAM alias. | SEGGER device list and press release; OpenOCD `tcl/target/stm32n6x.cfg`; RM0486 78.10.2 |
 | The M55 has an L1 D-cache with no uncached alias, so SEGGER's `SEGGER_RTT_CPU_CACHE_LINE_SIZE` scheme does not apply. RTT buffers must live in a non-cacheable region: the 8 KB backup SRAM (non-cacheable, disabled by default) or a devicetree region marked `ATTR_MPU_RAM_NOCACHE` with `SEGGER_RTT_SECTION_CUSTOM_DTS_REGION`. | `SEGGER_RTT.h` in module 50892fdb; `modules/segger/Kconfig`; N6 dtsi |
@@ -213,6 +213,9 @@ CPU% is computed on the host from cycle deltas, so the firmware does no division
 
 **Serialization.** Heartbeats are CBOR via `zcbor` (in tree, schema-tolerant,
 cheap at this rate). Trace data is not re-encoded: CTF bytes pass through.
+That is the planning default, not yet a decision: the trace format is chosen
+once per build, and Phase A picks between CTF, a zprof format and, on the N6,
+the STM (section 8).
 
 **Framing and transport.** One link carries all channels:
 
@@ -359,6 +362,7 @@ Exit criteria:
 
 | Deliverable | Detail |
 |---|---|
+| Trace format decision | First task, on measurements: CTF passthrough, a zprof format through `TRACING_FORMAT_HEADER`, or on the N6 the STM with an ETR ring (section 8). The rows below assume CTF. |
 | `zprof` tracing backend | `TRACING_BACKEND_DEFINE` that wraps CTF bytes into channel 2. A Kconfig entry added to `TRACING_BACKEND_CHOICE` plus a `TRACING_BACKEND_NAME` default from the module (prototype this first: extending the named choice from out of tree is the assumption to prove). |
 | Bridge CTF path | Live decode, thread-state intervals, ISR lane, derived latency and run-length stats. |
 | Sferic `IntervalSeries` | Append-only, windowed, binary-search pick (section 2.5). Lands in `lightning` with a gallery example and snap coverage. |
@@ -467,6 +471,19 @@ delta timestamps) could cut a switch from 68 to under 16 bytes, at the cost of
 compatibility with `trace_viewer.py`, Perfetto conversion and babeltrace2. Only
 do that with measurements in hand.
 
+**Phase A format decision.** The format is exclusive at a915b2f1: CTF,
+`TRACING_USER` and an out-of-tree `TRACING_FORMAT_HEADER` cannot be combined
+in one build. The options:
+
+| Option | Gains | Costs |
+|---|---|---|
+| CTF passthrough (planning default) | `trace_viewer.py`, Perfetto via `ctf2perfetto.py`, babeltrace2 work unchanged | 68 B per switch; no IRQ number at `isr_enter`; no object state, so the bridge infers lock holders |
+| zprof format via `TRACING_FORMAT_HEADER`, user-hook style | Object pointers at every hook, so semaphore count, queue fill and mutex owner at the event; IRQ number from IPSR; compact encoding | Our own decoder; the bridge exports CTF or Perfetto for the tools |
+| N6 only: events to STM stimulus ports, drained by the ETR into a RAM ring | One store per event, hardware timestamps and serialization, merges with ETM instruction trace; no RTT copy on the CPU | Needs an STM devicetree node and a funnel / ETF / ETR setup driver (Zephyr has the `arm,stmesp` binding, the STP decoder and the CoreSight deformatter); unknowns in [OBSERVABILITY_AND_SVD_REVIEW.md](OBSERVABILITY_AND_SVD_REVIEW.md) section 5 |
+
+Spike the STM path on the DK before the backend is built, since it changes
+what the backend is.
+
 ## 9. Risks and open questions
 
 Risks:
@@ -532,6 +549,7 @@ Still open:
 2. Which J-Trace PRO model and hardware version (streaming trace on Zynq needs
    HW V3.0+)?
 3. Firmware agent name (`zprof` is a placeholder).
+4. Phase A trace format: CTF, a zprof format, or the N6 STM (section 8).
 
 ## References
 

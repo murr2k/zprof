@@ -24,7 +24,7 @@ comes from a simulated target that behaves like the real one should (section
 | Targets | AMD Zynq PS (part to be chosen) and ST STM32N6570-DK (Cortex-M55 at 800 MHz) |
 | Firmware agent (planned) | Clean-room, Memfault-style: metric registry, 10 Hz heartbeat (1 Hz in soak), CBOR via zcbor, COBS frames with per-channel sequence numbers, spans / states / marks, parameter registry and watch block, fatal record and last-gasp uptime in retained RAM |
 | Transport (planned) | SEGGER RTT through a J-Link / J-Trace (planning number 2 MB/s), USB CDC ACM, UART, Ethernet; replay from recordings |
-| Trace | Zephyr CTF passed through unchanged (scheduler, ISR and kernel-object events), so `trace_viewer.py`, Perfetto and babeltrace2 still read the captures |
+| Trace | Planning default: Zephyr CTF passed through unchanged (scheduler, ISR and kernel-object events), so `trace_viewer.py`, Perfetto and babeltrace2 still read the captures. Phase A decides between CTF, a zprof format and, on the N6, the on-chip STM (PLANS.md section 8) |
 | Host bridge (planned) | Python, asyncio, WebSocket to the browser; decode, record, replay, derive (jobs, lock ownership, inversion, heap map, insight rules) |
 | Dashboard | TypeScript + Vite on [Sferic](https://github.com/murr2k/sferic-charts) (WebGL2, one shared context, glow, 3D); 12 views; dark and daylight themes |
 | Status encoding | Color plus shape on every status (ok circle, warn triangle, crit square, info diamond, idle ring) |
@@ -139,7 +139,9 @@ labelled so.
 |---|---|
 | `docs/PLANS.md` | Research, architecture, firmware agent, host bridge, phases, link budget, risks |
 | `docs/DASHBOARD_SPEC.md` | Users, data model, parameter catalog, views, interaction, thresholds, Sferic mapping, platform comparison, hybrid views (section 13), write path (section 14) |
+| `docs/OBSERVABILITY_AND_SVD_REVIEW.md` | What Zephyr's observability services and the STM32N6 SVD add, with ranked recommendations |
 | `config/` | Thresholds file and its schema |
+| `host/svd/` | Generator for the annotated STM32N657 register workbook (from ST's SVD and the pinned devicetree) |
 | `firmware/west.yml` | Zephyr pin and module allowlist |
 | `web/src/charts/` | New Sferic panels: IntervalSeries, KpiStrip, BulletChart, SequenceTrace, AnatomyChart, PhaseFold, FlowGraph, AddressMap, HeapXRay |
 | `web/src/sim/` | Simulated target, heap model, memory map, window queries, explanations, insight rules, soak run, profile |
