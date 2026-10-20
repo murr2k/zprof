@@ -397,6 +397,32 @@ The STP and CoreSight pages prompted a look at RM0486 section 78 [RM]:
   and ITM; the STM merges into the same trace bus) to both the ETR and the
   TPIU, filtered by source ID.
 
+zprof events could reach RAM through the STM and the ETR, without a trace
+port (the highlighted path):
+
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TD
+    ETM["ETM<br/>instruction trace<br/>(Phase D-alt profiling)"]
+    ITM["ITM<br/>software trace<br/>stimulus ports"]
+    STM["STM<br/>zprof events,<br/>one store each,<br/>hardware timestamps"]
+    FUN["Funnel (CSTF)<br/>merges the three<br/>into one stream"]
+    REP["Replicator<br/>copies it, filtered<br/>by source ID"]
+    ETR["ETR into a RAM ring<br/>AXI scatter-gather<br/>into system RAM,<br/>read by the probe<br/>or forwarded by the agent<br/>over USB or Ethernet"]
+    TPIU["TPIU and SWO<br/>trace port on CN10<br/>to a J-Trace PRO,<br/>needs SAI1 off on the DK"]
+    ETM --> FUN
+    ITM --> FUN
+    STM --> FUN
+    FUN --> REP
+    REP --> ETR
+    REP --> TPIU
+    classDef zprof fill:#e3eefa,stroke:#2f6db5,stroke-width:2px,color:#000
+    class STM,ETR zprof
+```
+
+Not drawn: the ETF trace FIFO, the second replicator and the CTIs (RM0486
+section 78 places them).
+
 What this means for zprof on the N6:
 
 - **Event tracing at one store per event.** The agent writes an event word to

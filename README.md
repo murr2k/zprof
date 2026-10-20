@@ -95,6 +95,29 @@ trace over RTT:
   deformatter, `arm,stmesp` binding). The N6 still needs an STM devicetree
   node and a funnel / ETF / ETR setup driver.
 
+```mermaid
+%%{init: {"flowchart": {"wrappingWidth": 320}}}%%
+flowchart TD
+    ETM["ETM<br/>instruction trace<br/>(Phase D-alt profiling)"]
+    ITM["ITM<br/>software trace<br/>stimulus ports"]
+    STM["STM<br/>zprof events,<br/>one store each,<br/>hardware timestamps"]
+    FUN["Funnel (CSTF)<br/>merges the three<br/>into one stream"]
+    REP["Replicator<br/>copies it, filtered<br/>by source ID"]
+    ETR["ETR into a RAM ring<br/>AXI scatter-gather<br/>into system RAM,<br/>read by the probe<br/>or forwarded by the agent<br/>over USB or Ethernet"]
+    TPIU["TPIU and SWO<br/>trace port on CN10<br/>to a J-Trace PRO,<br/>needs SAI1 off on the DK"]
+    ETM --> FUN
+    ITM --> FUN
+    STM --> FUN
+    FUN --> REP
+    REP --> ETR
+    REP --> TPIU
+    classDef zprof fill:#e3eefa,stroke:#2f6db5,stroke-width:2px,color:#000
+    class STM,ETR zprof
+```
+
+The highlighted path carries zprof events without a trace port. Not drawn:
+the ETF trace FIFO, the second replicator and the CTIs (RM0486 section 78).
+
 Not designed yet. A spike on the DK opens Phase A, to settle whether secure
 firmware can program the subsystem with debug closed, the ETR's bandwidth
 into AXISRAM, the timestamp clock, and whether J-Link can read the ring while
