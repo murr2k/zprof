@@ -23,7 +23,7 @@ comes from a simulated target that behaves like the real one should (section
 | RTOS | Zephyr, `main` pinned by SHA (a915b2f1, 2026-10-16, 4.5 development) in `firmware/west.yml` |
 | Targets | AMD Zynq PS (part to be chosen) and ST STM32N6570-DK (Cortex-M55 at 800 MHz) |
 | Firmware agent (planned) | Clean-room, Memfault-style: metric registry, 10 Hz heartbeat (1 Hz in soak), CBOR via zcbor, COBS frames with per-channel sequence numbers, spans / states / marks, parameter registry and watch block, fatal record and last-gasp uptime in retained RAM |
-| Transport (planned) | SEGGER RTT through a J-Link / J-Trace (planning number 2 MB/s), USB CDC ACM, UART, Ethernet; replay from recordings |
+| Transport (planned) | SEGGER RTT through a J-Link / J-Trace (planning number 2 MB/s), USB CDC ACM, UART, Ethernet; replay from recordings. On the N6, possibly the on-chip STM and ETR ring instead (section "On-chip trace on the STM32N6") |
 | Trace | Planning default: Zephyr CTF passed through unchanged (scheduler, ISR and kernel-object events), so `trace_viewer.py`, Perfetto and babeltrace2 still read the captures. Phase A decides between CTF, a zprof format and, on the N6, the on-chip STM (PLANS.md section 8) |
 | Host bridge (planned) | Python, asyncio, WebSocket to the browser; decode, record, replay, derive (jobs, lock ownership, inversion, heap map, insight rules) |
 | Dashboard | TypeScript + Vite on [Sferic](https://github.com/murr2k/sferic-charts) (WebGL2, one shared context, glow, 3D); 12 views; dark and daylight themes |
@@ -78,6 +78,29 @@ Poking variables at run time is part of the design, done safely:
 - The debug-probe path (J-Link memory access while the core runs) is
   read-only, because of cache coherence, torn multi-word writes and
   register-cached variables. Details in [DASHBOARD_SPEC.md section 14](docs/DASHBOARD_SPEC.md).
+
+### On-chip trace on the STM32N6 (candidate)
+
+The N6 has a CoreSight trace subsystem that could replace streaming the event
+trace over RTT:
+
+- The agent writes each event to an STM stimulus port, a single store. The
+  STM timestamps and serializes it in hardware: no copy into an RTT buffer,
+  no CTF framing on the CPU.
+- The ETR writes the merged trace (STM events, and ETM instruction trace when
+  enabled) into a RAM ring over AXI. A probe reads the ring as it reads an
+  RTT buffer, or the agent forwards it over USB or Ethernet; the TPIU to a
+  J-Trace is the other drain.
+- Zephyr at the pin already decodes it (MIPI STP decoder, CoreSight
+  deformatter, `arm,stmesp` binding). The N6 still needs an STM devicetree
+  node and a funnel / ETF / ETR setup driver.
+
+Not designed yet. A spike on the DK opens Phase A, to settle whether secure
+firmware can program the subsystem with debug closed, the ETR's bandwidth
+into AXISRAM, the timestamp clock, and whether J-Link can read the ring while
+tracing. Details in
+[OBSERVABILITY_AND_SVD_REVIEW.md section 5](docs/OBSERVABILITY_AND_SVD_REVIEW.md)
+and [PLANS.md section 8](docs/PLANS.md).
 
 ### Telemetry catalog
 
@@ -152,8 +175,9 @@ labelled so.
 
 1. **Phase B, statistics:** firmware agent with heartbeat and registry, bridge
    with record and replay, the statistics views on real hardware (both targets).
-2. **Phase A, timeline:** CTF streaming over RTT, intervals and kernel events
-   in the bridge, Trace, Timing and Objects on live data.
+2. **Phase A, timeline:** first the trace format decision, with a spike on the
+   N6's STM and ETR; then the event trace (CTF over RTT by default), intervals
+   and kernel events in the bridge, Trace, Timing and Objects on live data.
 3. **Phase D, function profiling:** the instrumentation subsystem, or ETM
    instruction trace through a J-Trace PRO on the STM32N6570-DK.
 

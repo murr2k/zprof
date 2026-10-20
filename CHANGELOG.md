@@ -40,6 +40,8 @@ and a dashboard mockup on synthetic data; no firmware or bridge has shipped.
   sources; the N6 hardware questions.
 - PLANS.md: the trace format is a Phase A decision between CTF, a zprof
   format and the N6 STM, with the trade-offs in section 8.
+- README: the N6 on-chip trace path (STM events into an ETR RAM ring) as a
+  candidate to replace RTT streaming, and the spike that opens Phase A.
 
 ## [0.2.0] - 2026-10-20
 
