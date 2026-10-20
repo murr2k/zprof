@@ -99,7 +99,7 @@ Effort: S about a week or less, M one to three weeks, L more.
 | 13 | NPU activity lane (epoch and NPU interrupts) and AXI-cache hit / miss counters | features | N6 | S to M | spec 13 |
 | 14 | TCM rows in the floor plan from `SYSCFG_CM55TCMCR` | fidelity | N6 | S | Memory view |
 | 15 | Object inventory at connect (`TRACING_OBJECT_TRACKING` walk) named from ELF symbols | fidelity | both | S | bridge |
-| 16 | Generated register subset and unit tests from the SVD (field positions the agent relies on) | testing | N6 | S | `host/`, CI |
+| 16 | Generated register subset and unit tests from the SVD (field positions the agent relies on); the workbook generator already checks the signal list | testing | N6 | S | `host/`, CI |
 
 ## 3. Zephyr observability services
 
@@ -262,6 +262,11 @@ should refuse such a pair.
 - **Variants:** the N645 and N647 lack CRYP, PKA, SAES and the four MCE
   blocks; otherwise the parts match.
 - **CPU block:** CM55 r0p1, FPU present, 8 NVIC priority bits.
+- **Workbook:** `host/svd/svd_workbook.py` turns the SVD into an annotated
+  spreadsheet: each block with both aliases, clock enable, reset, debug
+  freeze and its Zephyr node at the pin; every register and field with
+  addresses, read side effects and write semantics; the interrupt table; and
+  the zprof signals of section 4.2, each checked against the SVD.
 
 ### 4.2 What it adds to zprof
 
@@ -364,6 +369,10 @@ does not arise. Two hazards remain:
 - RIFSC and RISAF registers have no fields.
 - `RCC_RSR` carries no `readAction` although its flags are cleared through
   `RMVF`; treat SVD access metadata as incomplete.
+- Two defects found while building the workbook: `IAC_IISR5` repeats the
+  field names of `IAC_IISR4` and sits at +0x384, leaving +0x380 empty; and
+  `DBGMCU_APB4FZ1.DBG_IWDG_STOP` is described as "WWDG stop in debug" while
+  its values say IWDG.
 - V1.0 from 2024; check for a newer release before generating code from it.
 
 ## 5. The N6 on-chip trace subsystem
