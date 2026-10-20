@@ -1,0 +1,17 @@
+{
+  "name": "zprof-web",
+  "version": "0.2.0",
+  "private": true,
+  "description": "zprof dashboard mockup on Sferic (synthetic data)",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.9.3",
+    "vite": "^6.4.4"
+  }
+}

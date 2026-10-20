@@ -1,0 +1,55 @@
+{
+  "$schema": "./zprof.thresholds.schema.json",
+  "version": 1,
+  "name": "zprof defaults",
+  "description": "Live alarm levels, run pass criteria and the build-compare gate. Every rule reads: breach when value <op> threshold. A project copies this file next to its firmware and edits it; the bridge, the dashboard and the run report all read the same file.",
+
+  "live": [
+    { "metric": "cpu.load", "unit": "%", "op": ">=", "warn": 70, "crit": 85 },
+    { "metric": "stack.*.margin", "unit": "%", "op": "<=", "warn": 25, "crit": 10 },
+    { "metric": "heap.*.peak_pct", "unit": "%", "op": ">=", "warn": 75, "crit": 90 },
+    { "metric": "slab.*.peak_pct", "unit": "%", "op": ">=", "warn": 75, "crit": 90 },
+    { "metric": "msgq.*.peak_pct", "unit": "%", "op": ">=", "warn": 75, "crit": 100 },
+    { "metric": "fifo.*.peak_pct", "unit": "%", "op": ">=", "warn": 75, "crit": 100 },
+    { "metric": "heap.*.frag_pct", "unit": "%", "op": ">=", "warn": 50, "crit": 75, "note": "1 - largest free block / free bytes" },
+    { "metric": "heap.*.growth", "unit": "B/s", "op": ">", "warn": 4, "crit": 16, "note": "Live bytes of one owner, OLS slope over the last 60 s" },
+    { "metric": "heap.*.failures", "unit": "count", "op": ">", "crit": 0, "note": "Failed allocations since boot" },
+    { "metric": "sched.*.inversion_us", "unit": "us", "op": ">", "warn": 0, "crit": 100, "note": "Worst time medium-priority threads ran while this thread waited on a lower-priority holder" },
+    { "metric": "sched.*.blocked_us", "unit": "us", "op": ">=", "warn": 250, "crit": 400, "note": "Worst lock wait of one job" },
+    { "metric": "wq.*.item_us", "unit": "us", "op": ">=", "warn": 200, "crit": 400, "note": "Longest item on a work queue; on a cooperative queue it delays every preemptible thread" },
+    { "metric": "irq.*.per_s", "unit": "/s", "op": ">=", "warn": 3000, "crit": 6000 },
+    { "metric": "ctrl.overshoot_pct", "unit": "%", "op": ">=", "warn": 10, "crit": 25, "note": "Speed loop step response, application metric" },
+    { "metric": "ctrl.settle_ms", "unit": "ms", "op": ">=", "warn": 250, "crit": 400, "note": "Time to stay within 2% of the new setpoint" },
+    { "metric": "log.buf.peak_pct", "unit": "%", "op": ">=", "warn": 75, "crit": 90 },
+    { "metric": "trace.buf.peak_pct", "unit": "%", "op": ">=", "warn": 50, "crit": 85 },
+    { "metric": "span.*.p99_pct", "unit": "% of budget", "op": ">=", "warn": 80, "crit": 100 },
+    { "metric": "span.*.miss", "unit": "count", "op": ">", "warn": 0 },
+    { "metric": "span.*.overrun", "unit": "count", "op": ">", "crit": 0 },
+    { "metric": "link.util", "unit": "%", "op": ">=", "warn": 70, "crit": 90 },
+    { "metric": "link.lost_pct", "unit": "%", "op": ">", "warn": 0, "crit": 0.1 },
+    { "metric": "agent.self", "unit": "%", "op": ">=", "warn": 1, "crit": 3 }
+  ],
+
+  "criteria": [
+    { "id": "unplanned-resets", "title": "Unplanned resets", "metric": "reset.unplanned", "agg": "count", "per": "run", "op": ">", "crit": 0 },
+    { "id": "hangs", "title": "Hangs (heartbeat silent > 60 s)", "metric": "hang", "agg": "count", "per": "run", "op": ">", "crit": 0 },
+    { "id": "fatal", "title": "Fatal errors / asserts", "metric": "fault.fatal", "agg": "count", "per": "run", "op": ">", "crit": 0 },
+    { "id": "heap-leak", "title": "Heap leak slope (95% CI)", "metric": "heap.*.alloc", "agg": "slope", "per": "dut", "unit": "B/h", "op": ">", "crit": 50,
+      "judge": "interval", "confidence": 0.95, "warmupHours": 1, "minWindowHours": 8 },
+    { "id": "stack-margin", "title": "Min stack margin", "metric": "stack.*.margin", "agg": "min", "per": "dut", "unit": "%", "op": "<", "warn": 20, "crit": 10 },
+    { "id": "ctrl-p99", "title": "ctrl_loop p99", "metric": "span.ctrl_loop.p99", "agg": "max", "per": "dut", "unit": "us", "op": ">", "warn": 425, "crit": 500 },
+    { "id": "cpu-p95", "title": "CPU p95", "metric": "cpu.load.p95", "agg": "max", "per": "dut", "unit": "%", "op": ">", "crit": 70 },
+    { "id": "telemetry-loss", "title": "Telemetry loss", "metric": "link.lost_pct", "agg": "max", "per": "run", "unit": "%", "op": ">", "warn": 0.05, "crit": 0.1 },
+    { "id": "mtbf", "title": "MTBF lower bound (90%)", "metric": "run.mtbf_lower", "agg": "last", "per": "run", "unit": "h", "op": "<", "crit": 1000, "confidence": 0.9 }
+  ],
+
+  "gate": [
+    { "metric": "build.rom", "title": "ROM", "mode": "delta_pct", "unit": "%", "op": ">=", "warn": 5, "crit": 10 },
+    { "metric": "build.ram", "title": "RAM", "mode": "delta_pct", "unit": "%", "op": ">=", "warn": 5, "crit": 10 },
+    { "metric": "cpu.busy", "title": "Busy CPU", "mode": "delta", "unit": "pt", "op": ">=", "warn": 2, "crit": 5 },
+    { "metric": "span.ctrl_loop.p99", "title": "ctrl_loop p99", "mode": "absolute", "unit": "us", "op": ">", "warn": 425, "crit": 500 },
+    { "metric": "stack.min_margin", "title": "Min stack margin", "mode": "absolute", "unit": "%", "op": "<", "warn": 20, "crit": 10 },
+    { "metric": "test.failed", "title": "Failing test cases", "mode": "absolute", "unit": "count", "op": ">", "crit": 0 },
+    { "metric": "test.coverage", "title": "Line coverage", "mode": "delta", "unit": "pt", "op": "<=", "warn": -1, "crit": -5 }
+  ]
+}

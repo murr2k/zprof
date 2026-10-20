@@ -1,0 +1,78 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "zprof.thresholds.schema.json",
+  "title": "zprof thresholds file",
+  "description": "Live alarm levels, run pass criteria and the build-compare gate (docs/DASHBOARD_SPEC.md section 7). Every rule: breach when value <op> threshold; warn and crit are both optional, at least one is required.",
+  "type": "object",
+  "required": ["version", "live", "criteria", "gate"],
+  "additionalProperties": false,
+  "properties": {
+    "$schema": { "type": "string" },
+    "version": { "const": 1 },
+    "name": { "type": "string" },
+    "description": { "type": "string" },
+    "live": { "type": "array", "items": { "$ref": "#/$defs/level" } },
+    "criteria": { "type": "array", "items": { "$ref": "#/$defs/criterion" } },
+    "gate": { "type": "array", "items": { "$ref": "#/$defs/gateRule" } }
+  },
+  "$defs": {
+    "op": { "enum": [">=", ">", "<=", "<"] },
+    "metric": {
+      "type": "string",
+      "description": "Catalog ID (spec section 3). '*' matches one instance segment, e.g. stack.*.margin.",
+      "pattern": "^[a-z_][a-z0-9_]*(\\.([a-z0-9_]+|\\*))*$"
+    },
+    "rule": {
+      "type": "object",
+      "required": ["metric", "op"],
+      "properties": {
+        "metric": { "$ref": "#/$defs/metric" },
+        "op": { "$ref": "#/$defs/op" },
+        "warn": { "type": "number" },
+        "crit": { "type": "number" },
+        "unit": { "type": "string" },
+        "title": { "type": "string" },
+        "note": { "type": "string" }
+      },
+      "anyOf": [{ "required": ["warn"] }, { "required": ["crit"] }]
+    },
+    "level": {
+      "description": "Live status for KPI tiles, bullets and tables.",
+      "allOf": [{ "$ref": "#/$defs/rule" }],
+      "unevaluatedProperties": false
+    },
+    "criterion": {
+      "description": "A run pass criterion. crit breach = FAIL, warn breach = WARN.",
+      "allOf": [{ "$ref": "#/$defs/rule" }],
+      "required": ["id", "title", "agg"],
+      "properties": {
+        "id": { "type": "string", "pattern": "^[a-z0-9-]+$" },
+        "agg": {
+          "enum": ["count", "max", "min", "last", "slope"],
+          "description": "How the metric is reduced over the run (and over DUTs, worst wins)."
+        },
+        "per": { "enum": ["run", "dut"], "description": "dut: evaluate per DUT and report the worst one." },
+        "judge": {
+          "enum": ["point", "interval"],
+          "description": "slope only. interval: FAIL when the whole confidence interval breaches crit, WARN when the point estimate does."
+        },
+        "confidence": { "type": "number", "exclusiveMinimum": 0, "exclusiveMaximum": 1 },
+        "warmupHours": { "type": "number", "minimum": 0 },
+        "minWindowHours": { "type": "number", "minimum": 0 }
+      },
+      "unevaluatedProperties": false
+    },
+    "gateRule": {
+      "description": "Build-compare rule. Any crit breach blocks the build; any warn needs review.",
+      "allOf": [{ "$ref": "#/$defs/rule" }],
+      "required": ["mode"],
+      "properties": {
+        "mode": {
+          "enum": ["absolute", "delta", "delta_pct"],
+          "description": "absolute: candidate value; delta: candidate minus baseline; delta_pct: that delta as % of baseline."
+        }
+      },
+      "unevaluatedProperties": false
+    }
+  }
+}

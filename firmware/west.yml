@@ -1,0 +1,26 @@
+# west manifest for zprof (zephyr-dev).
+# The repo root is the west workspace: from it run
+#   west init -l firmware
+#   west update
+# Zephyr and modules land in /zephyr and /modules (ignored by .gitignore).
+#
+# Zephyr is pinned to a commit on main, not to the branch: Build compare A/B
+# runs need an identical Zephyr, and main moves daily. Bump deliberately, then
+# re-check the sources cited in docs/DASHBOARD_SPEC.md section 3 at the new SHA.
+manifest:
+  remotes:
+    - name: zephyrproject-rtos
+      url-base: https://github.com/zephyrproject-rtos
+
+  projects:
+    - name: zephyr
+      remote: zephyrproject-rtos
+      revision: a915b2f12675b48b16d56653ea145dcd8f20cbbf # main, 2026-10-16
+      import:
+        name-allowlist:
+          - cmsis      # CMSIS-Core(A/R): Zynq PS (Cortex-A9, Cortex-R5)
+          - cmsis_6    # CMSIS-Core(M): STM32N6570-DK (Cortex-M55)
+          - hal_stm32
+          - picolibc
+          - segger     # RTT transport
+          - zcbor      # heartbeat CBOR

@@ -1,0 +1,28 @@
+# west workspace (pulled by `west update`, never committed). Root-anchored so
+# our own module's zephyr/ directory is not ignored.
+/.west/
+/zephyr/
+/modules/
+/bootloader/
+/tools/
+
+# Builds
+build/
+build-*/
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+
+# Web
+web/node_modules/
+web/dist/
+
+# Recordings from the bridge can be large
+*.zprec
+
+# Editor / OS
+.vscode/
+.idea/
+.DS_Store
