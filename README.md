@@ -153,7 +153,8 @@ the ELF of the build that made it: the bridge checks a build id.
 
 Node.js 20 or newer and a browser with WebGL2 on a GPU (tested with Chrome).
 The dashboard imports Sferic from source, checked out beside this repository
-as `lightning`:
+as `lightning` (zprof 0.3.0 is tested with Sferic's `main` at d115deb, the
+first commit with the sortable tables it needs):
 
 ```powershell
 git clone https://github.com/murr2k/sferic-charts.git ..\lightning
