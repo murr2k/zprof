@@ -48,7 +48,7 @@ a cycle turns out to have nothing to do (no job). The deadlines file names the
 marker (`"job": "frame"`); C is the thread's work between the marks, waits
 between them are self-suspension, and with `"period_us"` its releases are that
 period (a frame every refresh) rather than the marks' own times. The demo marks
-frames in `gfx.c` (branch `zprof-integration`): STOP just before `present()`
+frames in `gfx.c`: STOP just before `present()`
 hands the frame to the display, START right after it returns, so a frame's job
 includes the tail after the previous hand-over (screen switches), as the demo's
 own frame budget does; an idle slot ends with STOP(0) before its sleep. Without
