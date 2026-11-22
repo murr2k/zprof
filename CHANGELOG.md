@@ -8,7 +8,26 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+### Added
+
+- The Live target timeline triggers like a scope: pick a lane in its
+  *Trigger* menu and the window is placed on that lane's latest release (a
+  thread made ready, or run, after a gap in its activity; an interrupt
+  entered), at 10 % from the left with a marker line there. The lane stands
+  still and the others stream against it: on the demo, triggered on the
+  audio thread, its jobs held to within 1 px over seconds (under 20 us at a
+  23 ms window), the microphone's stood still with them (one clock), and the
+  UI thread streamed past. With no trigger seen yet it follows the newest
+  data. The menu and a *Hold* / *Live* button sit on the timeline's title row.
+
 ### Fixed
+
+- A zoomed timeline no longer empties: a zoom or pan held the axis while new
+  data went on evicting everything older than the bridge's 12 s, so the view
+  ran empty. Held, the timeline is fed nothing (nothing in view is evicted,
+  nothing grows); *Live* follows again with the span zoomed to as the new
+  window width, a double-click with the last one, and both refill it from
+  the link's retained window.
 
 - What-ifs that move a thread now recompute the blocking it causes. A
   cooperative thread made preemptible, or moved above, still counted as

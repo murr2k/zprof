@@ -122,6 +122,7 @@ export class IntervalSeries extends SeriesXY {
   private ticks = new RectBatch()
   private xmin = Infinity
   private xmax = -Infinity
+  private laneTicks: ReturnType<Axis['addCustomTick']>[] = []
 
   constructor(chart: ChartXY, ax: Axis, ay: Axis, colorIndex: number, o: IntervalSeriesOptions) {
     super(chart, ax, ay, colorIndex, 'Intervals')
@@ -187,9 +188,8 @@ export class IntervalSeries extends SeriesXY {
     ay.setTickStrategy(AxisTickStrategies.Empty)
     ay.setInterval({ start: 0, end: L, stopAxisAfter: true })
     ay.setMouseInteractions(false)
-    this.laneNames.forEach((name, i) => {
-      ay.addCustomTick().setValue(L - i - 0.5).setText(name).setGridStrokeStyle(emptyLine).setTickLength(0)
-    })
+    this.laneTicks = this.laneNames.map((name, i) =>
+      ay.addCustomTick().setValue(L - i - 0.5).setText(name).setGridStrokeStyle(emptyLine).setTickLength(0))
     if (bands) {
       const t = this.chart.getTheme()
       const fill = new SolidFill({ color: t.gridMinorColor })
@@ -201,6 +201,12 @@ export class IntervalSeries extends SeriesXY {
         b.setStrokeStyle(emptyLine)
       }
     }
+    return this
+  }
+
+  /** The text of a lane's label on the lane axis (after setupLaneAxis); cursor rows keep the lane's name. */
+  setLaneLabel(lane: number, text: string) {
+    this.laneTicks[lane]?.setText(text)
     return this
   }
 

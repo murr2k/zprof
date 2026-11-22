@@ -7,9 +7,26 @@ import { durMs, rate } from '../format'
 import { liveLink, CODE, type IntervalBatch, type LiveHello, type LiveStats, type LiveStatus } from '../live/link'
 import { fill, irqColor, line, threadColor, type View } from './common'
 import { dataTable } from '../charts/dataTable'
+import { button, el, select } from '../dom'
 
 const TIMELINE_MS = 200
 const HISTORY_S = 60
+/** Where the trigger sits in the window, from the left. */
+const TRIG_AT = 0.1
+/** Activity closer than this to the lane's last is contiguous: a preemption, not a release. */
+const CONTIG_MS = 0.002
+
+/** A window's width for its title: 23 ms, 4.2 ms, 590 us, 1.25 s. */
+const span = (ms: number) => (ms < 1 ? `${(ms * 1000).toFixed(0)} us` : ms < 10 ? `${ms.toFixed(1)} ms`
+  : ms < 1000 ? `${ms.toFixed(0)} ms` : `${(ms / 1000).toFixed(2)} s`)
+
+/** What the timeline keeps across rebuilds (a hello rebuilds the view). */
+interface Prefs {
+  /** Window width, ms (the timebase): TIMELINE_MS, or the span zoomed to before Live. */
+  width: number
+  /** The lane triggered on, by its label; '' runs free. */
+  trig: string
+}
 
 /**
  * Live target: the real board through the zprof bridge. KPI strip, scheduler
@@ -30,10 +47,11 @@ export const liveTarget: View = ({ container, theme: t }) => {
   container.appendChild(host)
 
   let built: Built | null = null
+  const prefs: Prefs = { width: TIMELINE_MS, trig: '' }
   const rebuild = (h: LiveHello) => {
     built?.dispose()
     note.hidden = true
-    built = build(host, t, h)
+    built = build(host, t, h, prefs, (fn) => link.replay(fn))
     link.replay((b) => built!.batch(b))
     for (const s of link.stats.slice(-HISTORY_S)) built.stats(s, true)
     const last = link.stats[link.stats.length - 1]
@@ -80,7 +98,8 @@ interface Built {
   dispose(): void
 }
 
-function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
+function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
+  replay: (fn: (b: IntervalBatch) => void) => void): Built {
   const [bad] = t.examples.badGoodColorPalette
   const dash = sferic().Dashboard({ container: host, theme: t, numberOfColumns: 4, numberOfRows: 4, splitterThickness: 4 })
   dash.setRowHeight(0, 0.62).setRowHeight(1, 2.0).setRowHeight(2, 1.35).setRowHeight(3, 1.0)
@@ -103,26 +122,123 @@ function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
     { name: 'waiting for an event (semaphore, queue, message, poll)', color: t.isDark ? ColorRGBA(120, 140, 180, 90) : ColorRGBA(110, 125, 160, 90), height: 0.14 },
   ]
   const READY_ST = L, DROP_ST = L + 1, BLOCKED_ST = L + 2, WAITING_ST = L + 3
-  const title = `Scheduler timeline, live ${TIMELINE_MS} ms window: ${h.source === 'replay' ? 'replay of ' : ''}${h.target}`
   const tl = dash.createChartXY({ columnIndex: 0, rowIndex: 1, columnSpan: 4, legend: { visible: false } })
-    .setTitle(title).setTitleFont((f) => f.setSize(13))
-  tl.axisX
-    .setTickStrategy(AxisTickStrategies.Time)
-    .setScrollStrategy(AxisScrollStrategies.scrolling)
-    .setDefaultInterval((s) => ({ end: s.dataMax ?? 0, start: (s.dataMax ?? 0) - TIMELINE_MS, stopAxisAfter: false }))
+    .setTitleFont((f) => f.setSize(13))
   const laneNames = h.lanes.map((ln) => (ln.kind === 'irq' ? `ISR ${ln.name}` : `${ln.name}${ln.prio !== null ? ` ${ln.prio}` : ''}`))
   const gantt = addIntervalSeries(tl, { lanes: laneNames, states, retention: h.retain_ms, formatDuration: durMs })
   gantt.setupLaneAxis()
   tl.axisY.setThickness(132)
 
+  // Following, holding and triggering. The axis follows the newest data, or, triggered,
+  // the latest release of one lane, placed TRIG_AT into the window: that lane stands
+  // still and the others stream against it (with no trigger seen yet it follows the
+  // newest data, a scope's auto mode). A zoom or pan stops the axis (Sferic) and holds
+  // the timeline: nothing more is fed to it, so nothing in view is evicted while you
+  // look; Live or a double-click refills it from the link's retained window.
+  let trig = prefs.trig ? laneNames.indexOf(prefs.trig) : -1
+  let trigs: number[] = []        // release times of the trigger lane, ascending
+  let lastAct = -Infinity         // end of the trigger lane's latest activity
+  let curT: number | null = null  // the trigger the window is placed on
+  let held = false
+  const latest = (limit: number): number | null => {
+    let lo = 0, hi = trigs.length
+    while (lo < hi) {
+      const m = (lo + hi) >> 1
+      if (trigs[m] <= limit) lo = m + 1
+      else hi = m
+    }
+    return lo > 0 ? trigs[lo - 1] : null
+  }
+  tl.axisX
+    .setTickStrategy(AxisTickStrategies.Time)
+    .setScrollStrategy(AxisScrollStrategies.scrolling)
+    .setDefaultInterval((s) => {
+      const end = s.dataMax ?? 0, w = prefs.width
+      curT = trig >= 0 ? latest(end - (1 - TRIG_AT) * w) : null
+      return curT !== null
+        ? { start: curT - TRIG_AT * w, end: curT + (1 - TRIG_AT) * w, stopAxisAfter: false }
+        : { start: end - w, end, stopAxisAfter: false }
+    })
+  const marker = tl.axisX.addConstantLine(true).setVisible(false)
+
   const batch = (b: IntervalBatch) => {
+    if (held) return
     for (let i = 0; i < b.n; i++) {
       const ln = b.lane[i], c = b.code[i]
       if (ln >= L) continue
-      if (c === CODE.DROP) gantt.mark(ln, b.t0[i], DROP_ST)
-      else gantt.append(ln, b.t0[i], b.t1[i], c === CODE.READY ? READY_ST : c === CODE.BLOCKED ? BLOCKED_ST : c === CODE.WAITING ? WAITING_ST : ln)
+      if (c === CODE.DROP) {
+        gantt.mark(ln, b.t0[i], DROP_ST)
+        continue
+      }
+      gantt.append(ln, b.t0[i], b.t1[i], c === CODE.READY ? READY_ST : c === CODE.BLOCKED ? BLOCKED_ST : c === CODE.WAITING ? WAITING_ST : ln)
+      // A release: the lane becomes ready or runs (an interrupt: is entered) after a gap
+      // in its activity; ready right after running is a preemption, not a release.
+      if (ln === trig && c !== CODE.BLOCKED && c !== CODE.WAITING) {
+        if (b.t0[i] > lastAct + CONTIG_MS) trigs.push(b.t0[i])
+        if (b.t1[i] > lastAct) lastAct = b.t1[i]
+      }
     }
+    if (trigs.length > 20_000) trigs.splice(0, trigs.length - 20_000)
   }
+  const refill = () => {
+    held = false
+    trigs = []
+    lastAct = -Infinity
+    curT = null
+    gantt.clear()
+    replay(batch)
+    gantt.commit()
+  }
+
+  // ---------------------------------------------------------------- timeline controls
+  const ctl = el('div', 'tl-ctl')
+  const state = el('span', 'tl-state')
+  const holdBtn = button('Hold', () => (held ? live() : hold()), 'btn tiny',
+    'Hold the timeline to look at it (a zoom or pan holds it too)')
+  const trigSel = select<string>([['', 'Free run'], ...laneNames.map((n): [string, string] => [n, n])],
+    trig >= 0 ? laneNames[trig] : '', (v) => setTrigger(v))
+  trigSel.title = 'Trigger: the lane whose releases stay still in the window'
+  ctl.append(el('span', '', 'Trigger'), trigSel, holdBtn, state)
+  host.appendChild(ctl)
+  let linkNote = ''
+  let shown = 0   // the span in view the title names while held
+  const inView = () => Math.abs(tl.axisX.end - tl.axisX.start)
+  const chrome = () => {
+    const what = trig >= 0 ? `, triggered on ${laneNames[trig]}` : ''
+    const src = `${h.source === 'replay' ? 'replay of ' : ''}${h.target}`
+    shown = inView()
+    tl.setTitle(`Scheduler timeline, ${held ? `held, ${span(shown)} in view` : `live ${span(prefs.width)} window`}${what}: ${src}${linkNote}`)
+    holdBtn.textContent = held ? 'Live' : 'Hold'
+    holdBtn.classList.toggle('on', held)
+    holdBtn.title = held ? `Follow live again with this ${span(shown)} window (double-click: with the last one, ${span(prefs.width)})`
+      : 'Hold the timeline to look at it (a zoom or pan holds it too)'
+    state.textContent = held ? 'held' : trig >= 0 && curT === null ? 'waiting for a trigger' : ''
+    for (let i = 0; i < L; i++) gantt.setLaneLabel(i, i === trig ? `▸ ${laneNames[i]}` : laneNames[i])
+    marker.setVisible(trig >= 0 && curT !== null)
+    if (trig >= 0) marker.setStrokeStyle(line(laneColor[trig].setA(230), 1))
+  }
+  const hold = () => {
+    tl.axisX.stopped = true
+    held = true
+    chrome()
+  }
+  // Live: the span zoomed to becomes the window; the axis follows again and the
+  // timeline is refilled with what came meanwhile.
+  const live = () => {
+    const span = Math.abs(tl.axisX.end - tl.axisX.start)
+    if (span > 0.05) prefs.width = span
+    refill()
+    tl.axisX.fit(false)
+    chrome()
+  }
+  const setTrigger = (name: string) => {
+    prefs.trig = name
+    trig = name ? laneNames.indexOf(name) : -1
+    refill()   // the trigger lane's releases from the retained window; holding ends
+    tl.axisX.fit(false)
+    chrome()
+  }
+  chrome()
 
   // ---------------------------------------------------------------- CPU by thread
   const cpu = dash.createChartXY({ columnIndex: 0, rowIndex: 2, columnSpan: 2, legend: { visible: true, position: 'right' } })
@@ -214,16 +330,37 @@ function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
 
   // The bridge re-makes a broken link by itself; the timeline goes on after the gap.
   const status = (st: LiveStatus) => {
-    tl.setTitle(st.link === 'down'
-      ? `${title}: LINK DOWN (${st.why}), ${h.source === 'replay' ? 'replay ended' : 'reconnecting'}`
-      : st.sessions > 1 ? `${title} (session ${st.sessions})` : title)
+    linkNote = st.link === 'down'
+      ? `: LINK DOWN (${st.why}), ${h.source === 'replay' ? 'replay ended' : 'reconnecting'}`
+      : st.sessions > 1 ? ` (session ${st.sessions})` : ''
+    chrome()
+  }
+
+  let waiting = false
+  const frame = () => {
+    const stopped = tl.axisX.stopped
+    if (stopped && !held) {          // a zoom or pan: hold what is in view
+      held = true
+      chrome()
+    } else if (!stopped && held) {   // a double-click: follow again, with what came meanwhile
+      refill()
+      chrome()
+    }
+    const w = trig >= 0 && !held && curT === null
+    if (w !== waiting) { waiting = w; chrome() }
+    if (held && Math.abs(inView() - shown) > shown * 0.005) chrome()   // zooming while held
+    if (curT !== null) marker.setValue(curT).setVisible(trig >= 0)
+    gantt.commit()
+    const r = tl.rect
+    ctl.style.left = `${r.x + r.w - ctl.offsetWidth - 10}px`
+    ctl.style.top = `${r.y + 4}px`
   }
 
   return {
     batch,
     stats,
     status,
-    frame: () => { gantt.commit() },
-    dispose: () => dash.dispose(),
+    frame,
+    dispose: () => { ctl.remove(); dash.dispose() },
   }
 }
