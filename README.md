@@ -17,6 +17,55 @@ firmware module, the bridge and three dashboard views run on live data. The
 other dashboard views are still the original mockup on a simulated target,
 and say so on screen.
 
+## Why zprof
+
+A test that passes says the system met its deadlines this time. zprof says
+how much room was left, where it went, and which coincidence would break it
+first, while the target runs its real workload. The evidence column is from
+the STM32N6570-DK demo.
+
+| Feature | Benefit | On the demo |
+|---|---|---|
+| Tracing over the target's own Ethernet; no probe, no halt | Observe every operating mode on an ordinary board, with no licence notice and nothing that stops the core | The attract lap, the camera and the NPU observed live; SystemView's attach halts the core about 0.6 s |
+| Low cost, measured by the target and always on screen | Leave it on during real tests; the observer effect is a number, not a guess | 159 to 171 ns a hook, 1.2 to 2 % of the CPU on Home (up to 3.7 % with every kernel object); a full regression tour with zprof streaming: 0 dropped frames, 0 audio underruns |
+| Heartbeat metrics on the trace's clock, cross-checked against the trace | Verify the application's own counters with a second instrument | Frames, refresh period, least frame margin and audio refills all equal the demo's counts; per-thread CPU within 0.03 points of the kernel's |
+| Schedulability analysis from measurement | Margins instead of pass or fail: slack per deadline, how far every execution time can grow, the bound for each deadline with its causes | Home: 3 of 3 deadlines met, main 20 % slack, every execution time can grow 6 % |
+| Job marks (`ZPROF_MARK_START/STOP`) | Exact jobs for loops the kernel cannot see, so the analysis stops guessing | main's frame is 6.4 ms of work; without marks a whole 15.6 ms period was assumed and main looked like it could miss |
+| What-ifs on the measured model | Try a priority, execution time, period or deadline change before touching code | Recommendations name the interfering thread and the change to try |
+| Kernel objects with wait reasons, owners and call sites (`file.c:line`) | See what each thread waits for and where, and tell idle rest from contention | A TCP connection's mutex contended up to 7.5 ms, partly by zprof's own sender: the tool reports its own effect too |
+| Event-loop shapes | An architecture check from the running system: active objects, wait points, handlers that block | Audio, microphone, Ethernet, player I/O, NPU and card watcher are active objects; main is a marked job loop with one wait point; the web and Home Power services are sequential loops with 3 to 10 wait points |
+| Capture-then-upload | A window with no trace traffic on the network at all, for the cases where streaming would disturb the measurement | 4 MB, 8 s of the attract lap with two 1.5 MB screenshots sent meanwhile: no record lost |
+| Recordings, a replay-equals-live check, Perfetto export | Regression evidence: compare builds run against run, and share a trace | 481,881 records decoded identically in different pieces |
+| A link that recovers by itself | Cable pulls, resets and reflashes need no restart of anything | Streaming resumed 0.5 s after a 4 s carrier drop, 0 records lost |
+| Names from the ELF, checked against a build id | No strings on the target, and a trace analysed against the wrong build is flagged | About 8 KB of flash and 72 KB of internal RAM (64 KB of it the ring) |
+| A browser dashboard, Apache-2.0 | Nothing to license, and a page anyone on the team can open | The screenshots in this README, taken from the board live |
+
+### What it found in a demo that already passed its tests
+
+- **Network receive, not graphics, is the biggest interference.** On Home,
+  network receive threads are the largest share of the main thread's bound.
+  The network's cooperative threads (Ethernet receive, the TCP work queue)
+  run at the audio thread's own priority, and a 1.5 MB transfer drives up
+  to 130,000 events a second.
+- **A latent audio risk on the Camera screen.** The microphone thread
+  normally runs about 22 us a job, but ran up to 1.7 ms there: its ring is in
+  PSRAM, which the NPU and the camera also use. It is cooperative, so the audio
+  thread can wait behind it for up to 63 % of its 2.68 ms deadline. Underruns
+  are still 0; the margin depends on worst cases not coinciding.
+- **Starvation below the long runners.** The NPU's 65 to 130 ms runs and the
+  video decoder starved anything below them; zprof's own sender had to move
+  from priority 14 to 1.
+- **Something periodic on Home.** Its frames fall into two bands, about 5.3
+  and 6.3 ms, visible in the Timing view and not yet explained.
+
+### Limits
+
+- Verdicts hold "under the load observed": measured, not proved. Observe
+  one operating mode at a time; an observation that mixes modes overstates
+  the risk.
+- zprof adds network traffic of its own, and it shows up as interference.
+- Tested on one target so far: a Cortex-M55 on Zephyr v4.4.0.
+
 ## What it records
 
 - **Scheduling:** every thread switch with its reason (preempted, pending on
