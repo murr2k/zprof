@@ -36,7 +36,10 @@ def test_lanes_batches_and_stats() -> None:
 
     s = LiveSession(target="test")
     s.feed(bytes(e.out))
-    msgs = s.updates()
+    out = s.updates()
+    status = [json.loads(m) for m in out if isinstance(m, str) and '"status"' in m]
+    assert status and status[0]["classes"] == 0xFF and status[0]["preset"] == "objects"
+    msgs = [m for m in out if not (isinstance(m, str) and '"status"' in m)]
     hello = json.loads(msgs[0])
     assert hello["type"] == "hello"
     names = [x["name"] for x in hello["lanes"]]

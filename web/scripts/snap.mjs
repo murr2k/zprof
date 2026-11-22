@@ -2,6 +2,8 @@
 // WebGL warnings (the zprof invariant: zero of either on every view, both themes).
 // Uses Sferic's harness (Chrome with the GPU, puppeteer-core) from ../lightning.
 //   node scripts/snap.mjs [--views target,live] [--theme storm|daylight] [--wait 6000] [--out ../captures/snaps]
+//   --click "x,y;x,y": click those page points after the wait (300 ms apart), then a second
+//   screenshot, <view>-<theme>-click.png (a table heading, a button)
 // The dev server must be running (run.cmd, port 8781); for the live view, the bridge too.
 import { mkdirSync } from 'node:fs'
 import { join, resolve } from 'node:path'
@@ -30,9 +32,19 @@ for (const v of String(o.views).split(',')) {
   await new Promise((r) => setTimeout(r, Number(o.wait)))
   const file = join(o.out, `${v}-${o.theme}.png`)
   await page.screenshot({ path: file })
+  let clicked = ''
+  if (o.click) {
+    for (const p of String(o.click).split(';')) {
+      const [x, y] = p.split(',').map(Number)
+      await page.mouse.click(x, y)
+      await new Promise((r) => setTimeout(r, 300))
+    }
+    clicked = join(o.out, `${v}-${o.theme}-click.png`)
+    await page.screenshot({ path: clicked })
+  }
   const errs = [...new Set(errors)]
   failed += errs.length ? 1 : 0
-  console.log(`${errs.length ? 'ERR' : 'ok '} ${v} -> ${file}${errs.length ? '\n    ' + errs.slice(0, 5).join('\n    ') : ''}`)
+  console.log(`${errs.length ? 'ERR' : 'ok '} ${v} -> ${file}${clicked ? `, ${clicked}` : ''}${errs.length ? '\n    ' + errs.slice(0, 5).join('\n    ') : ''}`)
 }
 await browser.close()
 process.exitCode = failed ? 1 : 0

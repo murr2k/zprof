@@ -5,6 +5,8 @@
   python -m zprof_bridge summary rec.zpr [--elf zephyr.elf] [--irq-header device.h]
   python -m zprof_bridge export rec.zpr [-o rec.json] [--elf ...] [--irq-header ...]   (ui.perfetto.dev)
   python -m zprof_bridge serve [--host H | --replay rec.zpr [--speed 1] [--loop]] [--record rec.zpr] [--ws-port 8786]
+                               [--deadlines d.json] [--preset sched|timing|objects]
+  python -m zprof_bridge sched rec.zpr [--elf ...] [--irq-header ...] [--deadlines d.json]
   python -m zprof_bridge discover
 
 capture records a session to a .zpr file (the stream as received, replayable)
@@ -22,8 +24,11 @@ import time
 from pathlib import Path
 
 from . import link, record
+from . import thresholds as TH
 from .analyze import Analysis, irq_names_from_header, report
 from .elf import Elf
+from .presets import BY_ID
+from .sched import load_deadlines, sched_report
 from .stream import Decoder, StreamError
 
 
@@ -114,6 +119,31 @@ def cmd_export(a: argparse.Namespace) -> None:
           f"{n['drops']} drop markers; open it in https://ui.perfetto.dev (the file stays in the browser)")
 
 
+def cmd_sched(a: argparse.Namespace) -> None:
+    """The schedulability analysis of a recording, decoded chunk by chunk (a long one
+    does not fit in memory as records)."""
+    from .live import LiveSession
+
+    head, chunks = record.read(a.recording)
+    elf_path = a.elf or head.get("elf")
+    elf = Elf(elf_path) if elf_path and Path(elf_path).exists() else None
+    names = irq_names_from_header(a.irq_header) if a.irq_header else {}
+    s = LiveSession(elf, names, target=Path(a.recording).name, source="replay",
+                    deadlines=load_deadlines(a.deadlines), thresholds=TH.load(a.thresholds))
+    for _, data in chunks:
+        if data:
+            s.feed(data)
+        else:
+            s.restart()
+        s.retained.clear()
+        s.pending.clear()
+    m = s.sched_model()
+    if m is None:
+        sys.exit("no jobs in the recording")
+    out = s.sched_message(*m, full=True)
+    print(sched_report(out))
+
+
 def cmd_serve(a: argparse.Namespace) -> None:
     import asyncio
 
@@ -125,8 +155,10 @@ def cmd_serve(a: argparse.Namespace) -> None:
         elf_path = head.get("elf") if head.get("elf") and Path(head["elf"]).exists() else None
     elf = Elf(elf_path) if elf_path else None
     names = irq_names_from_header(a.irq_header) if a.irq_header else {}
+    dl = load_deadlines(a.deadlines)
+    th = TH.load(a.thresholds)
     if a.replay:
-        s = live.LiveSession(elf, names, target=Path(a.replay).name, source="replay")
+        s = live.LiveSession(elf, names, target=Path(a.replay).name, source="replay", deadlines=dl, thresholds=th)
         src = live.from_recording(s, a.replay, a.speed, a.loop)
     else:
         host, port = a.host, a.port or link.DEFAULT_PORT
@@ -142,7 +174,9 @@ def cmd_serve(a: argparse.Namespace) -> None:
             if elf_path:
                 meta |= {"elf": str(Path(elf_path).resolve()), "elf_sha256": record.sha256(Path(elf_path))}
             w = record.Writer(a.record, meta)
-        s = live.LiveSession(elf, names, target=f"{host}:{port}", source="live")
+        s = live.LiveSession(elf, names, target=f"{host}:{port}", source="live", deadlines=dl, thresholds=th)
+        if a.preset:
+            s.want_classes = BY_ID[a.preset]["classes"]
         src = live.from_board(s, host, port, w)
     try:
         asyncio.run(live.serve(s, src, a.ws_port))
@@ -186,7 +220,17 @@ def main() -> None:
     sp.add_argument("--elf")
     sp.add_argument("--irq-header")
     sp.add_argument("--ws-port", type=int, default=8786)
+    sp.add_argument("--deadlines", help="threads' deadlines and release objects (JSON); else D = period")
+    sp.add_argument("--thresholds", help="thresholds file (default config/zprof.thresholds.json)")
+    sp.add_argument("--preset", choices=list(BY_ID), help="what the target records (the page can change it)")
     sp.set_defaults(fn=cmd_serve)
+    sp = sub.add_parser("sched", help="schedulability analysis of a recording")
+    sp.add_argument("recording")
+    sp.add_argument("--elf")
+    sp.add_argument("--irq-header")
+    sp.add_argument("--deadlines")
+    sp.add_argument("--thresholds")
+    sp.set_defaults(fn=cmd_sched)
     a = ap.parse_args()
     try:
         a.fn(a)

@@ -2,6 +2,7 @@ import { sferic, LUT, PalettedFill, PointStyle3D, SolidFill, SolidLine, regularC
 import { SoakSim, DUTS, chamber, isFailure, type Phase, type SoakEvent } from '../sim/soak'
 import { button, el, esc, glyph, segmented } from '../dom'
 import type { View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 const CYCLE_H = 4
 const PHASES: { phase: Phase; h0: number; h1: number }[] = [
@@ -42,8 +43,8 @@ export const reliabilityHelix: View = ({ container, theme: t }) => {
   const chart = dash.createChart3D({ columnIndex: 0, rowIndex: 0, rowSpan: 2, legend: { visible: true, position: 'right', addEntriesAutomatically: false } })
     .setTitle('Thermal helix: one turn per 4 h chamber cycle, height = hours, color = chamber temperature')
     .setTitleFont((f) => f.setSize(13))
-  const phaseGrid = dash.createDataGrid({ columnIndex: 1, rowIndex: 0 }).setTitle('Failures by chamber phase').setTitleFont((f) => f.setSize(13))
-  const evGrid = dash.createDataGrid({ columnIndex: 1, rowIndex: 1 }).setTitle('Events, ordered by chamber phase').setTitleFont((f) => f.setSize(13))
+  const phaseGrid = dataTable(dash, { columnIndex: 1, rowIndex: 0 }).setTitle('Failures by chamber phase').setTitleFont((f) => f.setSize(13))
+  const evGrid = dataTable(dash, { columnIndex: 1, rowIndex: 1 }).setTitle('Events, ordered by chamber phase').setTitleFont((f) => f.setSize(13))
   phaseGrid.setCellChangeHighlight(false)
   evGrid.setCellChangeHighlight(false)
 

@@ -29,6 +29,8 @@ locked its RIF configuration.
 | Wire protocol | [PROTOCOL.md](PROTOCOL.md) |
 | What the observer may cost | The user's rule (2026-11-21): zprof may change the run-time profile as long as the application stays within its timing budget and meets its real-time deadlines. The gate is the application's own faults with zprof streaming (on the demo: 0 dropped frames, 0 audio underruns in a full `tour.py`), not zprof's share of the CPU, which is reported (`agent.self`, measured by zprof itself: sender time plus events x measured hook cost) but not a pass criterion. Comparing single tours of two builds does not measure that share: tour figures vary between runs by as much (upload rate, decode times); compare ranges over several tours per build before quoting a difference |
 | Release | Private until the first release, after phase P3 of the new plan (live timeline, replay, Perfetto export, metrics, markers); then public, Apache-2.0 |
+| What to record | The user's rule (2026-11-21): not everything all the time; it depends on the task. Capture presets from the page (Scheduling, Timing, Kernel objects) choose the kernel-object classes; target-side counting of the hottest objects stays an option for the Kernel objects preset |
+| Schedulability | Added 2026-11-21 at the user's request: rate monotonic (fixed-priority) analysis of the measured system with recommendations and what-ifs, in the bridge and a live view; measurement-based, deadlines from a file. [SCHEDULABILITY.md](SCHEDULABILITY.md). Application markers (P3) will make the jobs of loops without one release object exact |
 
 New phase order: P0 groundwork, P1 trace core and a command-line bridge, P2
 capture mode and the live web views, P3 metrics and application markers, R1

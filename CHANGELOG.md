@@ -70,6 +70,67 @@ views are still the mockup on synthetic data.
   the link is down and why, and recordings mark the reconnects. On the N6:
   streaming resumed 0.5 s after a 4 s carrier drop came back, with 0 records
   lost, and 1 s after a reset board's network was up.
+- Kernel objects: semaphores, mutexes, message queues, queues (fifo, lifo),
+  sleeps, polls, timer expiry functions and work items (named by their
+  handler), each call with its timeout, what made it wait (a mutex's owner,
+  a queue's fill) and its return. The bridge names every object from the ELF
+  and times each wait; the summary and the live view list them: calls,
+  blocks, time waited, the calls that returned without the object (a timeout,
+  an empty poll). The timeline shows a thread waiting for an event as a thin
+  neutral bar and a thread blocked on a mutex another holds as red
+  (contention); contended mutexes head the table. A class mask (all on) and
+  the sender's own calls left out. A call that does not block is one record;
+  one that blocks adds a BLOCK record with its timeout or the mutex's owner.
+  On the demo, with an ENTER and an EXIT for every call, the events doubled
+  (20,000 a second on Home, 37,000 while the film plays) and a full tour lost
+  3.6 million records; with one record per call and the demo's sender at
+  priority 1 (`CONFIG_ZPROF_SENDER_PRIO`, it was starved by the NPU and the
+  video decoder at 14), 167,000, and the tour's deadlines held both times (0
+  dropped frames, 0 audio underruns). zprof's own cost 2 to 3.7 %. It found a
+  TCP connection's mutex contended up to 6 ms between the network's receive
+  thread and zprof's own sender.
+- Schedulability view (`#sched`): a response-time analysis of the measured
+  system against its deadlines. Jobs per thread from the scheduler's records
+  (its release object, or a declared period for a loop without one), arrival
+  curves and workload curves per thread and interrupt, Zephyr's cooperative
+  threads as blocking, self-suspension; the bound, slack, how much each thread
+  can grow, the factor every execution time can scale by, Audsley's priority
+  order, and recommendations with their numbers and causes (limits in the
+  thresholds file: `sched.*.slack_pct`, `blocking_pct`, `sporadic_pct`,
+  `sched.scale`). What-ifs (priority, execution time, period, deadline) are
+  analysed by the bridge on the measured model and follow the live data. A
+  priority-against-period map marks pairs out of deadline monotonic order.
+  Deadlines come from a file (`serve --deadlines`; the demo's:
+  `integrations/stm32n6-demo/deadlines.json`); only declared ones make the
+  verdict. `python -m zprof_bridge sched rec.zpr` prints it for a recording.
+  Checked against the textbook example and a scheduler simulation (150+ random
+  task sets, exact). Interference is each thread's and interrupt's measured
+  workload (the most it ran in any window), not its densest arrivals times its
+  worst run (17 ms of network interrupts in 27 ms that never happened). On the
+  demo's Home screen: audio_tid and mic_tid meet their 2.68 ms with 64 to 76 %
+  slack, both blocked up to 170 us by the network's cooperative receive thread;
+  main's 16.7 ms frame can be missed when its busiest frames meet the network's
+  densest bursts (its per-period work is an upper bound until a frame marker
+  exists). Over a whole tour it found mic_tid (cooperative, just below
+  audio_tid) running up to 1.7 ms instead of its usual 22 us, only on the Camera
+  screen (the NPU and the camera in PSRAM, where its ring is): audio_tid can wait
+  that long behind it. The tour itself: 0 dropped frames, 0 audio underruns,
+  with the Timing preset streaming. Model and blind spots: `docs/SCHEDULABILITY.md`.
+- Capture presets chosen from the page (the header's *recording* control):
+  Scheduling (no kernel-object events), Timing (mutexes), Kernel objects (all).
+  The target takes a CT_CLASSES control frame and answers with what it records;
+  the bridge sends the choice again at every session (`serve --preset` sets the
+  first). On the demo's Home screen: 9,800, 10,600 and 15,700 events a second,
+  zprof's own cost 1.15, 1.30 and 1.96 %.
+- The timeline's waits (rest and contention) come from the thread switches
+  themselves, so they show with every preset.
+- Every table sorts by a click on its heading: numbers highest first, text A
+  to Z, a second click reverses, a third restores the view's order, with a
+  mark in the heading; live tables keep their sort as values change. Grid
+  tables through `charts/dataTable.ts` (Sferic's DataGrid, which gained
+  `setSortable`), HTML tables with headings through `sortableTable` in
+  `dom.ts` (Watch & Tune's probe and audit tables). `snap.mjs --click "x,y"`
+  clicks page points before a second screenshot.
 - `python -m zprof_bridge export`: Trace Event JSON for ui.perfetto.dev.
 - `web/scripts/snap.mjs`: headless screenshots of views with every page
   error and WebGL warning listed (Sferic's harness).

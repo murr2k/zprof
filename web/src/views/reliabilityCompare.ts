@@ -4,6 +4,7 @@ import { statusColor, type Status } from '../charts/status'
 import { gateRule, ruleStatus } from '../thresholds'
 import { gauss, quantile, rng } from '../sim/rng'
 import type { View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 /**
  * Build-to-build regression view: baseline A vs candidate B, same board, same
@@ -113,7 +114,7 @@ export const reliabilityCompare: View = ({ container, theme: t }) => {
   box.axisY.setDefaultInterval({ start: 0, end: 260 })
 
   // Test results diff.
-  const tw = dash.createDataGrid({ columnIndex: 0, rowIndex: 2, columnSpan: 2 }).setTitle('Test suites (twister.json, same board)').setTitleFont((f) => f.setSize(13))
+  const tw = dataTable(dash, { columnIndex: 0, rowIndex: 2, columnSpan: 2 }).setTitle('Test suites (twister.json, same board)').setTitleFont((f) => f.setSize(13))
   const cell = (s: string): CellContent => {
     const st: Status = s === 'FAIL' ? 'crit' : 'ok'
     return { text: s, fill: statusColor(t, st).setA(st === 'ok' ? 50 : 200), textColor: t.titleColor }
@@ -125,7 +126,7 @@ export const reliabilityCompare: View = ({ container, theme: t }) => {
   tw.setColumnWidth(0, { min: 150 }).setCellChangeHighlight(false)
 
   // Kconfig diff.
-  const kc = dash.createDataGrid({ columnIndex: 2, rowIndex: 2 }).setTitle('Kconfig differences').setTitleFont((f) => f.setSize(13))
+  const kc = dataTable(dash, { columnIndex: 2, rowIndex: 2 }).setTitle('Kconfig differences').setTitleFont((f) => f.setSize(13))
   kc.setTableContent([['Symbol', A, B, 'Impact'], ...KCONFIG.map((k) => [...k] as CellContent[])])
   kc.setColumnWidth(0, { min: 190 }).setCellChangeHighlight(false)
   KCONFIG.forEach((k, i) => { if (k[1] !== k[2]) kc.setCellTextFillStyle(2, i + 1, t.examples.highlightColor) })

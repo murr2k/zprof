@@ -192,6 +192,11 @@ ZPROF_HOT void zprof_hook_switched_in(void)
 	PUT1(ZPROF_EV_SWITCH_IN, (uint16_t)t->base.prio, PTR(t));
 }
 
+/* the host reads these bits from SWITCH_OUT (proto.h) */
+BUILD_ASSERT(ZPROF_THS_PENDING == _THREAD_PENDING && ZPROF_THS_SLEEPING == _THREAD_SLEEPING &&
+	     ZPROF_THS_SUSPENDED == _THREAD_SUSPENDED && ZPROF_THS_QUEUED == _THREAD_QUEUED,
+	     "Zephyr's thread state bits moved: update ZPROF_THS_* in proto.h");
+
 ZPROF_HOT void zprof_hook_switched_out(void)
 {
 	struct k_thread *t = _current;
@@ -231,6 +236,23 @@ void zprof_hook_abort(struct k_thread *thread)
 void zprof_hook_name(struct k_thread *thread)
 {
 	PUT1(ZPROF_EV_NAME, 0, PTR(thread));
+}
+
+/* Kernel-object classes recorded (bit = id - ZPROF_OBJ_FIRST); all by default. */
+volatile uint32_t zprof_classes = BIT_MASK(ZPROF_OBJ_LAST - ZPROF_OBJ_FIRST + 1);
+/* The sender: its own kernel-object calls (the network stack's, under its
+ * sends) are left out, or zprof would trace its own traffic. */
+struct k_thread *volatile zprof_self;
+
+ZPROF_HOT void zprof_obj(uint8_t id, uint16_t arg, const void *obj, uint32_t val)
+{
+	if (!zprof_ring.on || !(zprof_classes & BIT(id - ZPROF_OBJ_FIRST))) {
+		return;
+	}
+	if (_current == zprof_self && !k_is_in_isr()) {
+		return;
+	}
+	PUT2(id, arg, PTR(obj), val);
 }
 
 ZPROF_HOT void sys_trace_isr_enter(void)

@@ -20,7 +20,7 @@ u8 channel | u8 flags | u16 seq | u32 len | payload[len]
 
 | Channel | Direction | Content |
 |---|---|---|
-| 0 | both | hello (target), control (host): START, STOP, CAPTURE_ARM, UPLOAD; later PARAM_SET (only behind the dashboard's arm switch) |
+| 0 | both | hello (target), control (host): CT_CLASSES (section 4a); planned START, STOP, CAPTURE_ARM, UPLOAD, later PARAM_SET (only behind the dashboard's arm switch) |
 | 1 | target | metrics (METRIC records) |
 | 2 | target | trace (records, section 2) |
 | 5 | target | heap calls (later) |
@@ -50,7 +50,7 @@ target addresses; the host names them from the ELF.
 | Id | Record | arg | Payload |
 |---|---|---|---|
 | 0x01 | SWITCH_IN | priority | thread |
-| 0x02 | SWITCH_OUT | thread state | pended-on object (0 if none): the switch reason |
+| 0x02 | SWITCH_OUT | thread state: Zephyr's bits (`ZPROF_THS_*`: pending 0x02, sleeping 0x04, suspended 0x10, queued 0x80 = still ready, preempted) | thread, the wait queue it pends on (0 if none): the switch reason |
 | 0x03 | ISR_ENTER | IRQ number (IPSR - 16), or 0x8000 + exception number for system exceptions | |
 | 0x04 | ISR_EXIT | as ISR_ENTER | |
 | 0x05 | IDLE | | [64-bit kernel cycles, if the timestamp stops in sleep] |
@@ -61,7 +61,7 @@ target addresses; the host names them from the ELF.
 | 0x0A | CREATE | priority | thread, entry |
 | 0x0B | ABORT | | thread |
 | 0x0C | NAME | | thread (the name follows on channel 0, from the sender thread) |
-| 0x10-0x3F | kernel objects | per class | object, then result, count or fill (semaphore give/take, mutex lock/unlock, msgq put/get, sleep, poll, timer, work start with handler) |
+| 0x10-0x17 | kernel objects: SEM, MUTEX, MSGQ, QUEUE (k_queue, k_fifo, k_lifo), SLEEP, POLL, TIMER, WORK | call << 4 \| phase (ENTER 1, BLOCK 2, EXIT 3) | object, value. Calls that may block (sem take, mutex lock, msgq put and get, queue get) have no ENTER: one EXIT (the return code) when they do not block, BLOCK (the timeout in ticks, 0xFFFFFFFF forever; for a mutex its owner) then EXIT when they do (the wait is BLOCK to EXIT). A sem give (value: the count after) and a mutex unlock: EXIT only. Other calls: ENTER with their input (a queue put's "allocated", a sleep's time), EXIT where it means something (sleep, poll, timer expiry); work items carry their handler; SLEEP has object 0 (the thread). Calls are numbered per class (`ZPROF_CALL_*`). Not recorded from the zprof sender itself (its sends would trace themselves); a run-time mask of classes (hello tag 10) |
 | 0x60 | MARK_START | | descriptor (rodata pointer), value |
 | 0x61 | MARK_STOP | | descriptor, value |
 | 0x62 | PLOT | | descriptor, value |
@@ -105,6 +105,19 @@ agent's own cost (159 ns a hook on the N6 at 800 MHz).
 
 The ids and tags are those of `firmware/zprof/include/zprof/proto.h`; the
 bridge reads them from that file.
+
+## 4a. Control (channel 0, host to target)
+
+Frames on channel 0 holding TLV commands. The target reads them between sends,
+without waiting; a frame longer than its 64-byte buffer is skipped.
+
+| Tag | Value | Answer |
+|---|---|---|
+| 64 CT_CLASSES | u32 mask of the kernel-object classes to record (bit = id - 0x10) | HT_CLASSES with the mask now in effect, in a control frame |
+
+Every session starts recording all classes; the bridge sends the page's choice
+again at every connection (`presets.py`: Scheduling 0x00, Timing 0x02, Kernel
+objects 0xFF).
 
 ## 5. Recording file (`.zpr`)
 

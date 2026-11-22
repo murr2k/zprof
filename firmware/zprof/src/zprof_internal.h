@@ -14,6 +14,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+struct k_thread;
+
 #define ZPROF_RING_WORDS (CONFIG_ZPROF_RING_SIZE / 4)
 
 struct zprof_ring {
@@ -26,6 +28,8 @@ struct zprof_ring {
 };
 
 extern struct zprof_ring zprof_ring;
+extern volatile uint32_t zprof_classes;
+extern struct k_thread *volatile zprof_self;
 
 /* Write one record (the hooks' path, and the sender's own records). */
 void zprof_put(uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0, uint32_t a1, uint32_t a2,

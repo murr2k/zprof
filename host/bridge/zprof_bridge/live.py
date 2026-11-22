@@ -28,14 +28,20 @@ from collections import deque
 from pathlib import Path
 
 from . import proto as P
-from .analyze import EXC_NAMES, Tracker
+from .analyze import CALL_NAMES, CLASS_NAMES, EXC_NAMES, ISR_CTX, Tracker, short_name
 from .elf import Elf
+from . import thresholds as TH
+from .presets import ALL, BY_ID, PRESETS, classes_frame, preset_of
+from .sched import JobTracker, analyze, build_model, releases
 from .stream import Decoder
 
 RETAIN_MS = 12_000
 TICK_S = 0.05
+SCHED_S = 3.0
 
-RUN, READY, ISR, DROP = 0, 1, 2, 3  # interval codes on the wire
+# interval codes on the wire; BLOCKED: on a mutex another thread held (contention),
+# WAITING: for an event (a semaphore given, a queue filled, a poll), a thread's normal rest
+RUN, READY, ISR, DROP, BLOCKED, WAITING = 0, 1, 2, 3, 4, 5
 
 
 def encode_intervals(t0: list[float], t1: list[float], lane: list[int], code: list[int]) -> bytes:
@@ -47,20 +53,31 @@ def encode_intervals(t0: list[float], t1: list[float], lane: list[int], code: li
 
 class LiveSession:
     def __init__(self, elf: Elf | None = None, irq_names: dict[int, str] | None = None,
-                 target: str = "", source: str = "live"):
+                 target: str = "", source: str = "live", deadlines: dict | None = None,
+                 thresholds: dict | None = None):
         self.elf = elf
         self.irq_names = irq_names or {}
         self.target, self.source = target, source
+        self.deadlines = deadlines or {}           # thread name -> {"deadline_us", "release", "why"}
+        self.th = thresholds if thresholds is not None else TH.load()
         self.d = Decoder()
         self.d.on_session = self._session
         self.epoch = 0             # a new one after a reboot of the target: the page starts over
         self.link_state = "connecting"
         self.new_status: list[dict] = []
         self.wall_bytes = 0
+        # what the target records: the page's choice, applied to every new session
+        self.want_classes: int | None = None
+        self.to_target = None        # send bytes to the target, while connected
+        self._classes_seen: int | None = None
         self._reset_view()
 
     def _reset_view(self) -> None:
         self.tr: Tracker | None = None
+        self.jt: JobTracker | None = None          # jobs and arrivals for the schedulability view
+        self.sched_tasks: list | None = None       # the model of the last analysis (what-ifs start from it)
+        self.sched_meta: dict = {}
+        self.sched_last: str | None = None
         self.keys: list[tuple[str, int]] = []        # lane -> ('i', irq) | ('t', thread)
         self.lane: dict[tuple[str, int], int] = {}
         self.topo_dirty = False
@@ -90,11 +107,71 @@ class LiveSession:
 
     def link(self, state: str, why: str = "") -> None:
         self.link_state = state
+        if state != "up":
+            self.to_target = None
         self.new_status.append(self._status(why))
 
+    def attach(self, send) -> None:
+        """A connection to the target is up: `send(bytes)` reaches it. The chosen
+        classes go first (the target starts every session recording all of them)."""
+        self.to_target = send
+        if self.want_classes is not None:
+            send(classes_frame(self.want_classes))
+
+    def set_classes(self, classes: int) -> None:
+        """The page chose what the target records; it answers with what it records now."""
+        self.want_classes = classes & ALL
+        if self.to_target:
+            self.to_target(classes_frame(self.want_classes))
+        self.new_status.append(self._status())
+
+    def command(self, j: dict) -> list[str]:
+        """A message from a page; the answer for that page only (most answers go to
+        every page with the next updates). What-ifs are answered by `whatif`."""
+        kind = j.get("type")
+        if kind == "preset" and j.get("id") in BY_ID and self.source == "live":
+            self.set_classes(BY_ID[j["id"]]["classes"])
+        elif kind == "classes" and isinstance(j.get("classes"), int) and self.source == "live":
+            self.set_classes(j["classes"])
+        elif kind == "sched_reset" and self.tr is not None:
+            self._new_jobs()
+        return []
+
+    # ------------------------------------------------------------ schedulability
+    def _new_jobs(self) -> None:
+        """A fresh observation (at the first hello, a reboot, or the page's Reset)."""
+        self.jt = JobTracker(self.d.hello, self.d.threads, irqs=self.d.irqs,
+                             release_by_name=releases(self.deadlines),
+                             thread_name=lambda p: self.name(("t", p)),
+                             obj_name=lambda a: self.elf.name(a) if self.elf else None)
+
+    def sched_model(self) -> tuple[list, dict] | None:
+        """The task model as it stands, and what it was observed over (cheap: the
+        analysis runs on it elsewhere)."""
+        jt = self.jt
+        if jt is None or jt.t0 is None:
+            return None
+        tasks = build_model(jt, lambda p: self.name(("t", p)), self.deadlines,
+                            irq_name=lambda i: self.name(("i", i)))
+        meta = {"observed_s": (jt.t1 - jt.t0) / (self.d.hello.ts_hz or 1), "gaps": jt.gaps}
+        self.sched_tasks, self.sched_meta = tasks, meta
+        return tasks, meta
+
+    def sched_message(self, tasks: list, meta: dict, full: bool, overrides: dict | None = None) -> dict:
+        out = analyze(tasks, self.th, full=full, overrides=overrides, **meta)
+        out["deadlines_src"] = {n: d.get("why", "") for n, d in self.deadlines.items()}
+        out["preset"] = preset_of(self.d.hello.classes) if self.d.ready else None
+        return out
+
     def _status(self, why: str = "") -> dict:
+        h = self.d.hello
+        rec = h.classes if self.d.ready else None
         return {"type": "status", "link": self.link_state, "why": why, "sessions": self.d.sessions,
-                "reboots": self.d.reboots, "source": self.source, "target": self.target}
+                "reboots": self.d.reboots, "source": self.source, "target": self.target,
+                # recording control: only a live target can be told
+                "control": self.source == "live", "presets": PRESETS,
+                "classes": rec, "preset": preset_of(rec) if rec is not None else None,
+                "want": self.want_classes}
 
     # ------------------------------------------------------------ input
     def feed(self, data: bytes) -> None:
@@ -109,8 +186,13 @@ class LiveSession:
             h = self.d.hello
             # Lanes appear with their first interrupt or run, not from the tables: most
             # interrupts with a handler never fire, and many threads sleep for minutes.
-            self.tr = Tracker(h, keep=False, on_run=self._run, on_isr=self._isr, on_ready=self._ready)
+            self.tr = Tracker(h, keep=False, on_run=self._run, on_isr=self._isr, on_ready=self._ready,
+                              on_block=self._block)
+            self._new_jobs()
             self.topo_dirty = True
+        if self.d.hello.classes != self._classes_seen:   # a hello, or the target's answer to a change
+            self._classes_seen = self.d.hello.classes
+            self.new_status.append(self._status())
         recs = self.d.records
         if recs:
             if self._prev is None:
@@ -120,6 +202,7 @@ class LiveSession:
                 self._prev = self._snapshot()
                 self._prev["t"] = recs[0].t
             self.tr.feed(recs)
+            self.jt.feed(recs)
             for r in recs:
                 if r.id == P.EV_OVERFLOW:  # a marker on the lane of the thread that was running
                     k = ("t", r.w[3])
@@ -160,6 +243,29 @@ class LiveSession:
         if b > a:
             self._key(("t", th))
             self._add(a, b, ("t", th), READY)
+
+    def _block(self, th: int, a: int, b: int, state: int, wq: int) -> None:
+        """A thread off the CPU, not ready, until it was made ready again: blocked on a
+        mutex (contention; known as one once a mutex call named it, so with the Timing
+        or Kernel objects preset), or waiting for an event or a sleep: most threads'
+        normal rest. From the scheduler's records, whatever the preset."""
+        self._key(("t", th))
+        self._add(a, b, ("t", th), BLOCKED if wq and wq in self.tr.mutexes else WAITING)
+
+    def obj_name(self, key: tuple[int, int], u) -> str:
+        cls, obj = key
+        if cls == P.EV_SLEEP:
+            return "ISR" if obj == ISR_CTX else self.name(("t", obj))
+        if self.elf:
+            if cls == P.EV_WORK and u.handler:  # a work item by its handler
+                h = self.elf.name(u.handler)
+                if h:
+                    return h
+            if obj:
+                n = self.elf.name(obj)
+                if n:
+                    return n
+        return f"{obj:#010x}"
 
     # ------------------------------------------------------------ names
     def name(self, k: tuple[str, int], long: bool = False) -> str:
@@ -260,7 +366,8 @@ class LiveSession:
         status = json.dumps(self._status())
         if self.tr is None or not self._first_hello_sent:
             return [status, json.dumps({"type": "waiting", "target": self.target, "source": self.source})]
-        return [status, self.hello(), self._encode(self.retained), *map(json.dumps, self.stats_hist)]
+        return [status, self.hello(), self._encode(self.retained), *map(json.dumps, self.stats_hist),
+                *([self.sched_last] if self.sched_last else [])]
 
     # ------------------------------------------------------------ statistics
     def _snapshot(self) -> dict:
@@ -271,6 +378,7 @@ class LiveSession:
             "isr_in": {p: u.isr_in for p, u in tr.threads.items()},
             "sw": {p: u.switches_in for p, u in tr.threads.items()},
             "irq": {i: (u.count, u.total) for i, u in tr.irqs.items()},
+            "obj": {k: (sum(u.calls.values()), u.blocks, u.without) for k, u in tr.objects.items()},
         }
 
     def _stats(self) -> dict:
@@ -311,6 +419,28 @@ class LiveSession:
                          "max_us": u.win_worst * us})
             u.win_worst = 0
         irqs.sort(key=lambda x: -x["cpu_pct"])
+        objects = []
+        for k, u in tr.objects.items():
+            c0, b0, e0 = prev["obj"].get(k, (0, 0, 0))
+            c1, b1, e1 = now["obj"][k]
+            spans = u.waits or u.durations
+            wsum = sum(spans)
+            if c1 - c0 or b1 - b0 or spans:
+                calls = ", ".join(f"{CALL_NAMES.get(u.cls, {}).get(c, c)}" for c, _ in u.calls.most_common(3))
+                objects.append({
+                    "name": short_name(self.obj_name(k, u), 40), "cls": CLASS_NAMES.get(u.cls, "?"), "calls": calls,
+                    "calls_s": (c1 - c0) / secs, "blocks_s": (b1 - b0) / secs, "without": e1 - e0,
+                    "wait_mean_us": wsum * us / len(spans) if spans else None,
+                    "wait_max_us": max(spans) * us if spans else None,
+                    # waits that began in the window before count whole: capped at the window
+                    "wait_pct": min(100.0, 100 * wsum / span) if u.waits else 0.0,
+                    "timer": u.cls == P.EV_TIMER,
+                    "contended": u.cls == P.EV_MUTEX and bool(u.waits),
+                })
+            u.waits.clear()      # live: per window only
+            u.durations.clear()
+        # contended mutexes first, then by time waited, then by traffic
+        objects.sort(key=lambda x: (not x["contended"], -(x["wait_pct"] or 0), -x["calls_s"]))
         recs = now["records"] - prev["records"]
         sender = next((x for x in threads if x["sender"]), None)
         hooks_pct = 100 * recs * h.hook_cost / span if h.hook_cost else 0.0
@@ -323,7 +453,7 @@ class LiveSession:
             "events_s": recs / secs, "kbytes_s": (now["bytes"] - prev["bytes"]) / secs / 1024,
             "dropped": now["dropped"] - prev["dropped"], "dropped_total": now["dropped"],
             "self_pct": (sender["cpu_pct"] if sender else 0) + hooks_pct, "hooks_pct": hooks_pct,
-            "threads": threads, "irqs": irqs,
+            "threads": threads, "irqs": irqs, "objects": objects[:20],
         }
 
 
@@ -351,10 +481,48 @@ async def serve(session: LiveSession, source_task, ws_port: int) -> None:
             await ws.send(m)
         clients.add(ws)
         try:
-            async for _ in ws:  # control from the page comes later
-                pass
+            async for m in ws:
+                if not isinstance(m, str):
+                    continue
+                try:
+                    j = json.loads(m)
+                except ValueError:
+                    continue
+                if not isinstance(j, dict):
+                    continue
+                if j.get("type") == "whatif":
+                    # the last model with the page's changes; answered to that page only
+                    if session.sched_tasks is not None:
+                        out = await asyncio.to_thread(session.sched_message, session.sched_tasks,
+                                                      session.sched_meta, True, j.get("overrides") or {})
+                        out["req"] = j.get("req")
+                        await ws.send(json.dumps(out))
+                    continue
+                for a in session.command(j):
+                    await ws.send(a)
         finally:
             clients.discard(ws)
+
+    async def sched_loop():
+        """The schedulability analysis every SCHED_S seconds, off the event loop (about
+        0.1 s for the demo's 50 threads and interrupts, room to grow and the order included)."""
+        while True:
+            await asyncio.sleep(SCHED_S)
+            m = session.sched_model()
+            if m is None:
+                continue
+            try:
+                out = await asyncio.to_thread(session.sched_message, *m, True)
+            except Exception as e:  # noqa: BLE001  an analysis bug must not stop the stream
+                print(f"schedulability analysis failed: {type(e).__name__}: {e}", flush=True)
+                continue
+            msg = json.dumps(out)
+            session.sched_last = msg
+            for ws in list(clients):
+                try:
+                    await ws.send(msg)
+                except Exception:  # noqa: BLE001
+                    clients.discard(ws)
 
     async def ticker():
         while True:
@@ -371,7 +539,7 @@ async def serve(session: LiveSession, source_task, ws_port: int) -> None:
 
     async with ws_serve(handler, "127.0.0.1", ws_port, process_request=check, max_size=None):
         print(f"bridge on ws://127.0.0.1:{ws_port}; open http://127.0.0.1:8781/#target", flush=True)
-        await asyncio.gather(source_task, ticker())
+        await asyncio.gather(source_task, ticker(), sched_loop())
 
 
 # The target sends a SYNC every 250 ms, so a second-long silence is already
@@ -410,6 +578,7 @@ async def from_board(session: LiveSession, host: str, port: int, writer=None) ->
         first = False
         print(f"connected to {host}:{port}" + (f" (after {attempts} attempt(s))" if attempts > 1 else ""), flush=True)
         session.link("up")
+        session.attach(w.write)
         got = False
         why = ""
         try:

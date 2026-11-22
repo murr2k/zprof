@@ -10,6 +10,7 @@ import { targetSim, THREADS, IRQS, LANES, IDLE, CTRL_BUDGET_US, LINK_BUDGET_BPS,
 import { quantile } from '../sim/rng'
 import { bytesRate, durMs, hms, kib, rate } from '../format'
 import { fill, irqColor, line, threadColor, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 const TIMELINE_MS = 200
 const HISTORY_MS = 30_000
@@ -117,7 +118,7 @@ export const engineeringLive: View = ({ container, theme: t }) => {
   }
 
   // ---------------------------------------------------------------- thread table
-  const grid = dash.createDataGrid({ columnIndex: 0, rowIndex: 3, columnSpan: 2 }).setTitle('Threads').setTitleFont((f) => f.setSize(13))
+  const grid = dataTable(dash, { columnIndex: 0, rowIndex: 3, columnSpan: 2 }).setTitle('Threads').setTitleFont((f) => f.setSize(13))
   const head = ['Thread', 'Prio', 'State', 'CPU %', 'Run avg / peak', 'Wake p99', 'Switches/s', 'Stack used / size', 'Watermark']
   // Watermark column colors follow the stack margin rule (margin 25% -> 75% used).
   const okTint = t.isDark ? ColorRGBA(60, 170, 100, 40) : ColorRGBA(40, 160, 90, 30)

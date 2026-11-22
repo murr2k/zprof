@@ -9,6 +9,7 @@ import { SoakSim, DUTS, RUN_HOURS, STEP_H, HEAP_SIZE, PHASE_SEGMENTS, chamber, i
 import { breaches, criterion, limitText, ruleStatus, thresholds, type Criterion } from '../thresholds'
 import { hours } from '../format'
 import { fill, line, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 /** Real seconds per simulated minute: the run advances while you watch. */
 const TICK_MS = 1000
@@ -108,7 +109,7 @@ export const reliabilitySoak: View = ({ container, theme: t }) => {
   }
 
   // ---------------------------------------------------------------- criteria (from config/zprof.thresholds.json)
-  const crit = dash.createDataGrid({ columnIndex: 3, rowIndex: 1 }).setTitle(`Pass criteria (${thresholds.name ?? 'thresholds file'})`).setTitleFont((f) => f.setSize(13))
+  const crit = dataTable(dash, { columnIndex: 3, rowIndex: 1 }).setTitle(`Pass criteria (${thresholds.name ?? 'thresholds file'})`).setTitleFont((f) => f.setSize(13))
   crit.setCellChangeHighlight(false)
 
   // ---------------------------------------------------------------- trend charts (X synchronized with the timeline)
@@ -142,7 +143,7 @@ export const reliabilitySoak: View = ({ container, theme: t }) => {
   ev.axisX.setTickStrategy(AxisTickStrategies.Numeric)
 
   // ---------------------------------------------------------------- fleet grid
-  const fleet = dash.createDataGrid({ columnIndex: 0, rowIndex: 3, columnSpan: 2 }).setTitle('DUT fleet').setTitleFont((f) => f.setSize(13))
+  const fleet = dataTable(dash, { columnIndex: 0, rowIndex: 3, columnSpan: 2 }).setTitle('DUT fleet').setTitleFont((f) => f.setSize(13))
   const fleetHead = ['DUT', 'Status', 'Uptime', 'Unplanned resets', 'Heap slope', 'Min stack', 'CPU p95', 'p99', 'Die max', 'Link loss']
   fleet.setCellChangeHighlight(false).setColumnWidth(0, { min: 64 })
   const tint = (lo: number, w: number, c: number, hi: number) => new PalettedFill({
@@ -166,7 +167,7 @@ export const reliabilitySoak: View = ({ container, theme: t }) => {
   const slices = causes.map((c) => donut.addSlice(c.name, 0).setFillStyle(fill(c.color)))
 
   // ---------------------------------------------------------------- fault signatures
-  const faults = dash.createDataGrid({ columnIndex: 3, rowIndex: 3 }).setTitle('Fault signatures (grouped)').setTitleFont((f) => f.setSize(13))
+  const faults = dataTable(dash, { columnIndex: 3, rowIndex: 3 }).setTitle('Fault signatures (grouped)').setTitleFont((f) => f.setSize(13))
   faults.setCellChangeHighlight(false)
 
   // ---------------------------------------------------------------- update

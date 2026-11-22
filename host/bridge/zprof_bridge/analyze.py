@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import re
 import statistics
-from collections import defaultdict
+from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -45,6 +45,45 @@ class ThreadUse:
     wake_lat: list[int] = field(default_factory=list)
 
 
+CLASS_NAMES = {P.EV_SEM: "k_sem", P.EV_MUTEX: "k_mutex", P.EV_MSGQ: "k_msgq", P.EV_QUEUE: "k_queue",
+               P.EV_SLEEP: "sleep", P.EV_POLL: "k_poll", P.EV_TIMER: "k_timer", P.EV_WORK: "k_work"}
+CALL_NAMES = {
+    P.EV_SEM: {P.CALL_GIVE: "give", P.CALL_TAKE: "take", P.CALL_RESET: "reset"},
+    P.EV_MUTEX: {P.CALL_LOCK: "lock", P.CALL_UNLOCK: "unlock"},
+    P.EV_MSGQ: {P.CALL_PUT: "put", P.CALL_GET: "get", P.CALL_PUT_FRONT: "put_front", P.CALL_PURGE: "purge"},
+    P.EV_QUEUE: {P.CALL_PUT: "put", P.CALL_GET: "get"},
+    P.EV_SLEEP: {P.CALL_SLEEP: "sleep", P.CALL_MSLEEP: "msleep", P.CALL_USLEEP: "usleep"},
+    P.EV_POLL: {P.CALL_POLL: "poll"},
+    P.EV_TIMER: {P.CALL_EXPIRY: "expiry"},
+    P.EV_WORK: {P.CALL_SUBMIT: "submit", P.CALL_SCHEDULE: "schedule", P.CALL_RESCHEDULE: "reschedule",
+                P.CALL_CANCEL: "cancel"},
+}
+ISR_CTX = -1  # the context of an object call made from an interrupt
+# Calls the target records with no ENTER (one EXIT record unless they block: BLOCK then
+# EXIT), and calls recorded at their EXIT only; counted at the EXIT. Call numbers are
+# per class: always test them with the class.
+MAY_BLOCK = {(P.EV_SEM, P.CALL_TAKE), (P.EV_MUTEX, P.CALL_LOCK), (P.EV_MSGQ, P.CALL_PUT),
+             (P.EV_MSGQ, P.CALL_PUT_FRONT), (P.EV_MSGQ, P.CALL_GET), (P.EV_QUEUE, P.CALL_GET)}
+EXIT_ONLY = {(P.EV_SEM, P.CALL_GIVE), (P.EV_MUTEX, P.CALL_UNLOCK)}
+# SWITCH_OUT states in which the thread stopped being ready (not preempted)
+BLOCKING = P.THS_PENDING | P.THS_SLEEPING | P.THS_SUSPENDED
+
+
+@dataclass
+class ObjUse:
+    """One kernel object (or a thread's sleeps, keyed by the thread)."""
+    cls: int
+    obj: int
+    calls: Counter = field(default_factory=Counter)   # call -> count
+    blocks: int = 0
+    waits: list[int] = field(default_factory=list)   # time blocked, per wait that blocked
+    without: int = 0                                 # calls that returned without the object: a
+                                                     # timeout, -EBUSY, an empty poll, a NULL get
+    durations: list[int] = field(default_factory=list)  # timer expiry functions: their run time
+    handler: int = 0                                 # work items: the handler
+    last: int | None = None                          # the last count / fill / owner reported
+
+
 @dataclass
 class IrqUse:
     count: int = 0
@@ -61,10 +100,19 @@ class Tracker:
     intervals from the callbacks and reads the running totals.
     """
 
-    def __init__(self, hello: Hello, keep: bool = True, on_run=None, on_isr=None, on_ready=None):
+    def __init__(self, hello: Hello, keep: bool = True, on_run=None, on_isr=None, on_ready=None, on_wait=None,
+                 on_block=None):
         self.hello = hello
         self.keep = keep
         self.on_run, self.on_isr, self.on_ready = on_run, on_isr, on_ready
+        self.on_wait = on_wait  # (thread, (class, object), blocked from, until, holder or 0)
+        # (thread, switched out at, made ready at, thread state, wait queue or 0): from the
+        # scheduler's own records, so it needs no kernel-object class
+        self.on_block = on_block
+        self.mutexes: set[int] = set()  # k_mutex addresses seen (its wait queue is at offset 0)
+        self._blocked: dict[int, tuple[int, int, int]] = {}  # thread -> (t, state, wait queue)
+        self.objects: dict[tuple[int, int], ObjUse] = {}
+        self._open: dict[int, list] = {}  # context -> [class, call, object, t_enter, t_block, holder]
         self.threads: dict[int, ThreadUse] = {}
         self.irqs: dict[int, IrqUse] = defaultdict(IrqUse)
         self.syncs: list[tuple[int, int]] = []   # (t, kernel cycles)
@@ -113,9 +161,14 @@ class Tracker:
                 self.cur, self._run_from = self.hello.sender or None, t
                 self._stack.clear()
                 self._ready_at.clear()
+                self._blocked.clear()
                 self._idle_at = None
+                self._open.clear()
                 continue
             self.records += 1
+            if P.OBJ_FIRST <= rid <= P.OBJ_LAST:
+                self._object(r, t)
+                continue
             if rid == P.EV_SWITCH_IN:
                 th = r.w[0]
                 self.cur, self._run_from = th, t
@@ -133,6 +186,9 @@ class Tracker:
                 if self.cur == th and self._run_from is not None:
                     self._ran(th, self._run_from, t)
                 self.cur = None
+                st = r.arg
+                if st & BLOCKING and not st & P.THS_QUEUED:
+                    self._blocked[th] = (t, st, r.w[1] if len(r.w) > 1 else 0)
             elif rid == P.EV_ISR_ENTER:
                 self._stack.append((r.arg, t))
             elif rid == P.EV_ISR_EXIT:
@@ -152,6 +208,9 @@ class Tracker:
                         self.use(self.cur).isr_in += dt
             elif rid == P.EV_READY:
                 self._ready_at.setdefault(r.w[0], t)
+                b = self._blocked.pop(r.w[0], None)
+                if b is not None and self.on_block:
+                    self.on_block(r.w[0], b[0], t, b[1], b[2])
             elif rid == P.EV_IDLE:
                 self._idle_at = t
             elif rid == P.EV_IDLE_EXIT:
@@ -163,6 +222,7 @@ class Tracker:
             elif rid == P.EV_OVERFLOW:
                 self.dropped += r.w[0]
                 self.drops.append((t, r.w[0]))
+                self._blocked.clear()  # the wakeups may be among what was lost
             elif rid == P.EV_THREAD_STATS:
                 # one batch per second, read thread by thread (an interrupt may land between)
                 if self._batch is not None and t - self._last_stats > self._gap:
@@ -172,6 +232,55 @@ class Tracker:
                     self._batch, self._batch_t = {}, t
                 self._batch[r.w[0]] = r.w[1] | (r.w[2] << 32)
                 self._last_stats = t
+
+    def _object(self, r, t: int) -> None:
+        cls, call, phase = r.id, r.arg >> 4, r.arg & 0xF
+        obj = r.w[0] if r.w else 0
+        val = r.w[1] if len(r.w) > 1 else 0
+        if cls == P.EV_MUTEX:
+            self.mutexes.add(obj)
+        ctx = ISR_CTX if self._stack else (self.cur if self.cur is not None else 0)
+        # a thread's sleeps are its own "object"
+        key = (cls, ctx if cls == P.EV_SLEEP else obj)
+        u = self.objects.get(key)
+        if u is None:
+            u = self.objects[key] = ObjUse(cls, key[1])
+        cc = (cls, call)
+        if phase == P.PH_ENTER:
+            if cc in MAY_BLOCK:      # an older recording's ENTER: the EXIT counts the call
+                return
+            u.calls[call] += 1
+            if cls == P.EV_WORK and val:
+                u.handler = val
+            if cc in ((P.EV_SEM, P.CALL_RESET), (P.EV_MSGQ, P.CALL_PURGE)):
+                u.last = val
+            self._open[ctx] = [cls, call, obj, t, None, 0]
+        elif phase == P.PH_BLOCK:
+            # the wait starts; the value: a mutex's owner, else the timeout
+            u.blocks += 1
+            self._open[ctx] = [cls, call, obj, t, t, val if cls == P.EV_MUTEX else 0]
+        elif phase == P.PH_EXIT:
+            if cc in EXIT_ONLY:
+                u.calls[call] += 1
+                if cls == P.EV_SEM:
+                    u.last = val     # the count after the give
+                return
+            if cc in MAY_BLOCK:
+                u.calls[call] += 1
+            o = self._open.pop(ctx, None)
+            ret = val - (1 << 32) if val & 0x80000000 else val
+            if cls in (P.EV_SEM, P.EV_MUTEX, P.EV_MSGQ, P.EV_POLL) and ret < 0:
+                u.without += 1                           # a timeout (-EAGAIN), a refusal (-EBUSY, -ENOMSG)
+            elif cls == P.EV_QUEUE and call == P.CALL_GET and val == 0:
+                u.without += 1                           # k_queue_get returned NULL (timed out)
+            # a sleep's return is the time left when it was woken early, not an error
+            if o and o[0] == cls and o[2] == obj:
+                if cls == P.EV_TIMER:
+                    u.durations.append(t - o[3])
+                elif o[4] is not None:
+                    u.waits.append(t - o[4])
+                    if self.on_wait and ctx not in (ISR_CTX, 0):
+                        self.on_wait(ctx, key, o[4], t, o[5])
 
     def finish(self) -> None:
         """End of a recording: close the open batch and the running thread's interval."""
@@ -208,6 +317,7 @@ class Analysis:
         self.isr_spans = tr.isr_spans
         self.wakes = tr.wakes
         self.drops = tr.drops
+        self.objects = tr.objects
         self.t0 = tr.t0 or 0
         self.t1 = tr.t1
 
@@ -225,6 +335,22 @@ class Analysis:
                 if e:
                     return f"<{e}>"
         return f"{ptr:#010x}"
+
+    def obj_name(self, key: tuple[int, int], u: ObjUse | None = None) -> str:
+        """A kernel object by its symbol in the ELF (`symbol` or `symbol+0xoff` for one
+        embedded in a struct), a work item by its handler, a thread's sleeps by the thread."""
+        cls, obj = key
+        if cls == P.EV_SLEEP:
+            return "ISR" if obj == ISR_CTX else self.thread_name(obj)
+        if cls == P.EV_WORK and u and u.handler and self.elf:
+            h = self.elf.name(u.handler)
+            if h:
+                return h
+        if self.elf and obj:
+            n = self.elf.name(obj)
+            if n:
+                return n
+        return f"{obj:#010x}"
 
     def irq_name(self, irq: int) -> str:
         if irq & P.ISR_EXC:
@@ -271,6 +397,17 @@ class Analysis:
             trace = self.clipped(u.intervals, ta, tb) if u else 0
             out.append((ptr, 100.0 * trace / span, 100.0 * (b[ptr] - a[ptr]) / kspan))
         return out
+
+
+def short_name(name: str, n: int) -> str:
+    """Fit a name in n characters, keeping a `+0xoff` suffix (objects inside one
+    big symbol differ only there)."""
+    if len(name) <= n:
+        return name
+    base, plus, off = name.rpartition("+")
+    if plus and off.startswith("0x") and len(off) + 2 < n:
+        return base[: n - len(off) - 2] + "~+" + off
+    return name[: n - 1] + "~"
 
 
 def pct(x: float) -> str:
@@ -325,6 +462,26 @@ def report(an: Analysis) -> str:
     for irq, iu in sorted(an.irqs.items(), key=lambda kv: -kv[1].total):
         lines.append(f"{an.irq_name(irq)[:36]:36s} {iu.count / secs:7.0f} {pct(100 * iu.total / span)} "
                      f"{an.seconds(iu.total / iu.count) * 1e6:8.2f} {an.seconds(iu.worst) * 1e6:8.2f}")
+
+    if an.objects:
+        lines.append("")
+        lines.append(f"{'kernel object':32s} {'class':8s} {'calls/s':>8s} {'blocks/s':>8s} "
+                     f"{'wait us':>8s} {'max':>9s} {'without':>7s}  calls")
+        def weight(kv):
+            u = kv[1]
+            return (-sum(u.waits) - sum(u.durations), -sum(u.calls.values()))
+        for key, u in sorted(an.objects.items(), key=weight)[:25]:
+            n = sum(u.calls.values())
+            if not n and not u.blocks:
+                continue
+            spans = u.waits or u.durations
+            mean = f"{an.seconds(statistics.mean(spans)) * 1e6:8.1f}" if spans else f"{'':8s}"
+            worst = f"{an.seconds(max(spans)) * 1e6:9.1f}" if spans else f"{'':9s}"
+            calls = " ".join(f"{CALL_NAMES.get(u.cls, {}).get(c, c)} {k}" for c, k in u.calls.most_common())
+            lines.append(f"{short_name(an.obj_name(key, u), 32):32s} {CLASS_NAMES.get(u.cls, '?'):8s} {n / secs:8.0f} "
+                         f"{u.blocks / secs:8.1f} {mean} {worst} {u.without:7d}  {calls}")
+        lines.append("  (wait: blocked until the call returned; for k_timer, the expiry function's run time;"
+                     " without: returned without the object: a timeout, -EBUSY, an empty poll)")
 
     chk = an.check_against_kernel()
     if chk:

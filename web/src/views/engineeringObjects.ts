@@ -3,6 +3,7 @@ import { FlowGraph, type FlowEdge, type FlowNode } from '../charts/FlowGraph'
 import { targetSim, AP, IRQS, OB, OBJECTS, RS, THREADS, TH, LINK_BUDGET_BPS, API, threadOfLane, type Heartbeat } from '../sim/target'
 import { go } from '../nav'
 import { irqColor, threadColor, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 const OBJ_COLOR: Record<string, number> = { timer: 9, sem: 1, msgq: 4, fifo: 2, mutex: 8, work: 7, heap: 5 }
 
@@ -23,7 +24,7 @@ export const engineeringObjects: View = ({ container, theme: t }) => {
     .setTitleFont((f) => f.setSize(13))
   const sun = dash.createSunburstChart({ columnIndex: 1, rowIndex: 0 }).setTitle('Kernel calls, last 10 s: type > object > API').setTitleFont((f) => f.setSize(13))
   sun.setValueFormatter((v) => `${v.toFixed(0)} calls`)
-  const grid = dash.createDataGrid({ columnIndex: 0, rowIndex: 1, columnSpan: 2 }).setTitle('Object inspector').setTitleFont((f) => f.setSize(13))
+  const grid = dataTable(dash, { columnIndex: 0, rowIndex: 1, columnSpan: 2 }).setTitle('Object inspector').setTitleFont((f) => f.setSize(13))
   grid.setCellChangeHighlight(false)
 
   // ---------------------------------------------------------------- graph

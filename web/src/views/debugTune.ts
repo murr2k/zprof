@@ -7,9 +7,10 @@ import { REGIONS, hex } from '../sim/memmap'
 import { quantile } from '../sim/rng'
 import { level, liveRule } from '../thresholds'
 import { takeFocus } from '../nav'
-import { button, el, esc, glyph, segmented } from '../dom'
+import { button, el, esc, glyph, segmented, sortableTable } from '../dom'
 import { fmtFull } from '../charts/SequenceTrace'
 import { fill, line, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 const ARM_S = 120
 const PERSIST = 5
@@ -45,7 +46,7 @@ export const debugTune: View = ({ container, theme: t }) => {
   const secPath = el('div', 'sec')
   secPath.innerHTML = '<h4>Write path</h4>'
   const pathNote = el('div', 'notice info')
-  const probeTbl = el('table', 'watch')
+  const probeTbl = sortableTable(el('table', 'watch'))
   const pathSeg = segmented<'agent' | 'probe'>([['agent', 'Agent registry (RTT down 1)'], ['probe', 'Probe MEM-AP direct']], 'agent', (v) => { probe = v === 'probe'; renderPath(); refreshRows() })
   secPath.append(pathSeg.el, pathNote)
   const nocache = REGIONS[0].blocks.find((b) => b.name === 'zprof tunables block')!.start
@@ -63,7 +64,7 @@ export const debugTune: View = ({ container, theme: t }) => {
       ? `${glyph('warn')} Probe writes go straight to RAM through the M55 AHB-AP (AP1), with no range check and no safe point. A write to a D-cached variable can be lost when a dirty line is evicted over it; a value wider than 32 bits can tear; a variable the compiler keeps in a register never sees it. This mockup reads through the probe but does not write; registry parameters stay on the agent path.`
       : `${glyph('info')} The agent range-checks each value, stages it, and the owning thread applies it at its safe point (seqlock per entry). The ack carries the target time it took effect, and every write lands in the recording as a trace event.`
     probeTbl.innerHTML = probe
-      ? '<tr><td><b>Symbol</b></td><td><b>Address</b></td><td class="v"><b>Value</b></td><td></td></tr>' +
+      ? '<tr><th>Symbol</th><th>Address</th><th class="v">Value</th><th>Where</th></tr>' +
         PROBE_VARS.map((v) => `<tr><td class="mono">${v.name}</td><td class="mono">${hex(v.addr)}</td><td class="v" data-probe="${v.name}"></td><td class="src">${glyph(v.risk)} ${v.where}</td></tr>`).join('')
       : ''
     if (probe) pathNote.after(probeTbl)
@@ -175,7 +176,7 @@ export const debugTune: View = ({ container, theme: t }) => {
   secW.append(wt)
   const secA = el('div', 'sec')
   secA.innerHTML = '<h4>Audit trail <span class="grow"></span><span>every request, this session</span></h4>'
-  const at = el('table', 'audit')
+  const at = sortableTable(el('table', 'audit'))
   secA.append(at)
   side.append(secPath, secArm, secP, secW, secA)
 
@@ -210,7 +211,7 @@ export const debugTune: View = ({ container, theme: t }) => {
   dash.setColumnWidth(0, 1.35).setColumnWidth(1, 1)
   const kpi = dash.createPanel(KpiStrip, { columnIndex: 0, rowIndex: 0, columnSpan: 2 })
   const scope = dash.createChartXY({ columnIndex: 0, rowIndex: 1, columnSpan: 2, legend: { visible: true, position: 'right' } }).setTitleFont((f) => f.setSize(13))
-  const steps = dash.createDataGrid({ columnIndex: 0, rowIndex: 2 }).setTitle('Step response per setpoint step (measured speed, from watch samples)').setTitleFont((f) => f.setSize(13))
+  const steps = dataTable(dash, { columnIndex: 0, rowIndex: 2 }).setTitle('Step response per setpoint step (measured speed, from watch samples)').setTitleFont((f) => f.setSize(13))
   steps.setCellChangeHighlight(false)
   const box = dash.createChartXY({ columnIndex: 1, rowIndex: 2, legend: { visible: false } }).setTitleFont((f) => f.setSize(13))
 

@@ -5,6 +5,7 @@ import { level } from '../thresholds'
 import { durMs, rate } from '../format'
 import { liveLink, CODE, type IntervalBatch, type LiveHello, type LiveStats, type LiveStatus } from '../live/link'
 import { fill, irqColor, line, threadColor, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 const TIMELINE_MS = 200
 const HISTORY_S = 60
@@ -80,8 +81,8 @@ interface Built {
 
 function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
   const [bad] = t.examples.badGoodColorPalette
-  const dash = sferic().Dashboard({ container: host, theme: t, numberOfColumns: 4, numberOfRows: 3, splitterThickness: 4 })
-  dash.setRowHeight(0, 0.62).setRowHeight(1, 2.0).setRowHeight(2, 1.5)
+  const dash = sferic().Dashboard({ container: host, theme: t, numberOfColumns: 4, numberOfRows: 4, splitterThickness: 4 })
+  dash.setRowHeight(0, 0.62).setRowHeight(1, 2.0).setRowHeight(2, 1.35).setRowHeight(3, 1.0)
   const kpi = dash.createPanel(KpiStrip, { columnIndex: 0, rowIndex: 0, columnSpan: 4 })
 
   // ---------------------------------------------------------------- timeline
@@ -97,8 +98,10 @@ function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
     ...h.lanes.map((ln, i) => ({ name: ln.kind === 'irq' ? 'in the interrupt' : ln.idle ? 'idle' : 'running', color: laneColor[i] })),
     { name: 'ready, waiting for the CPU', color: t.isDark ? ColorRGBA(170, 185, 215, 150) : ColorRGBA(90, 100, 125, 150), height: 0.26 },
     { name: 'records dropped by the target', color: bad },
+    { name: 'blocked on a mutex another thread held', color: bad.setA(190), height: 0.42 },
+    { name: 'waiting for an event (semaphore, queue, message, poll)', color: t.isDark ? ColorRGBA(120, 140, 180, 90) : ColorRGBA(110, 125, 160, 90), height: 0.14 },
   ]
-  const READY_ST = L, DROP_ST = L + 1
+  const READY_ST = L, DROP_ST = L + 1, BLOCKED_ST = L + 2, WAITING_ST = L + 3
   const title = `Scheduler timeline, live ${TIMELINE_MS} ms window: ${h.source === 'replay' ? 'replay of ' : ''}${h.target}`
   const tl = dash.createChartXY({ columnIndex: 0, rowIndex: 1, columnSpan: 4, legend: { visible: false } })
     .setTitle(title).setTitleFont((f) => f.setSize(13))
@@ -116,7 +119,7 @@ function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
       const ln = b.lane[i], c = b.code[i]
       if (ln >= L) continue
       if (c === CODE.DROP) gantt.mark(ln, b.t0[i], DROP_ST)
-      else gantt.append(ln, b.t0[i], b.t1[i], c === CODE.READY ? READY_ST : ln)
+      else gantt.append(ln, b.t0[i], b.t1[i], c === CODE.READY ? READY_ST : c === CODE.BLOCKED ? BLOCKED_ST : c === CODE.WAITING ? WAITING_ST : ln)
     }
   }
 
@@ -144,10 +147,14 @@ function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
   const colorByName = new Map(h.lanes.map((ln, i) => [ln.name, laneColor[i]]))
 
   // ---------------------------------------------------------------- tables
-  const tgrid = dash.createDataGrid({ columnIndex: 2, rowIndex: 2 }).setTitle('Threads, last second').setTitleFont((f) => f.setSize(13))
+  const tgrid = dataTable(dash, { columnIndex: 2, rowIndex: 2 }).setTitle('Threads, last second').setTitleFont((f) => f.setSize(13))
   tgrid.setCellChangeHighlight(false)
-  const igrid = dash.createDataGrid({ columnIndex: 3, rowIndex: 2 }).setTitle('Interrupts, last second').setTitleFont((f) => f.setSize(13))
+  const igrid = dataTable(dash, { columnIndex: 3, rowIndex: 2 }).setTitle('Interrupts, last second').setTitleFont((f) => f.setSize(13))
   igrid.setCellChangeHighlight(false)
+  const ogrid = dataTable(dash, { columnIndex: 0, rowIndex: 3, columnSpan: 4 })
+    .setTitle('Kernel objects, last second: contended mutexes first, then by time threads waited on them (k_timer: its expiry function; without: returned without the object)')
+    .setTitleFont((f) => f.setSize(13))
+  ogrid.setCellChangeHighlight(false)
   const us = (x: number | null) => (x === null ? '' : x < 10 ? x.toFixed(1) : x.toFixed(0))
 
   // ---------------------------------------------------------------- statistics
@@ -195,6 +202,13 @@ function build(host: HTMLElement, t: Theme, h: LiveHello): Built {
     tgrid.setTableContent([head, ...rows])
     const ihead = ['Interrupt', '/s', 'CPU %', 'mean us', 'max us']
     igrid.setTableContent([ihead, ...s.irqs.map((r) => [r.name, r.per_s.toFixed(0), r.cpu_pct.toFixed(2), us(r.mean_us), us(r.max_us)])])
+    const ohead = ['Object', 'Class', 'Calls', 'Calls/s', 'Blocks/s', 'Waiting %', 'Wait us', 'max', 'Without']
+    const restC = t.isDark ? ColorRGBA(120, 140, 180, 160) : ColorRGBA(110, 125, 160, 160)
+    ogrid.setTableContent([ohead, ...(s.objects ?? []).map((r): CellContent[] => [
+      r.contended ? `${r.name} (contended)` : r.name, r.cls, r.calls, r.calls_s.toFixed(0), r.blocks_s.toFixed(1),
+      r.timer ? '' : { value: r.wait_pct, text: r.wait_pct.toFixed(2), bar: r.wait_pct, barMin: 0, barMax: 100, barColor: r.contended ? bad.setA(220) : restC },
+      us(r.wait_mean_us), us(r.wait_max_us), r.without ? String(r.without) : '',
+    ])])
   }
 
   // The bridge re-makes a broken link by itself; the timeline goes on after the gap.

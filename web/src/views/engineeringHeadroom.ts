@@ -6,6 +6,7 @@ import { targetSim, LINK_BUDGET_BPS, CTRL_BUDGET_US, THREADS, TH, type Heartbeat
 import { liveRule, ruleStatus, type Rule } from '../thresholds'
 import { button, el, glyph } from '../dom'
 import type { View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 /** One tick per lane, labelled with the lane's name (the numeric strategy would skip some). */
 class LaneTicks extends EmptyTickStrategy {
@@ -81,7 +82,7 @@ export const engineeringHeadroom: View = ({ container, theme: t }) => {
   const chart = dash.createChart3D({ columnIndex: 0, rowIndex: 0, legend: { visible: false } })
     .setTitle('Headroom landscape: resources x time, height in threshold units (1 = warn, 2 = crit)')
     .setTitleFont((f) => f.setSize(13))
-  const grid = dash.createDataGrid({ columnIndex: 1, rowIndex: 0 }).setTitle('Closest to the edge, now').setTitleFont((f) => f.setSize(13))
+  const grid = dataTable(dash, { columnIndex: 1, rowIndex: 0 }).setTitle('Closest to the edge, now').setTitleFont((f) => f.setSize(13))
   grid.setCellChangeHighlight(false)
 
   chart.setBoundingBox({ x: 1.7, y: 0.62, z: 1.25 })

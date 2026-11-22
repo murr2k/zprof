@@ -157,6 +157,33 @@ select.sel { border: 1px solid var(--line); background: var(--chip); border-radi
 .watch td { padding: 3px 4px; border-top: 1px solid var(--line); }
 .watch td.v { text-align: right; font-variant-numeric: tabular-nums; font-weight: 600; }
 .watch td.src { color: var(--dim); font-size: 11px; }
+.watch th { padding: 3px 4px; text-align: left; color: var(--dim); font-weight: 600; }
+.watch th.v { text-align: right; }
+/* schedulability */
+.sched-about { font-size: 12px; line-height: 1.45; color: var(--dim); }
+.sched-about b { color: var(--text); font-weight: 600; }
+.row-tools { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.recs { display: flex; flex-direction: column; gap: 6px; }
+.rec { padding: 7px 9px; border-radius: 6px; border: 1px solid var(--line); border-left-width: 3px; font-size: 12px; line-height: 1.42; }
+.rec.crit { border-left-color: var(--crit); }
+.rec.warn { border-left-color: var(--warn); }
+.rec.info, .rec.ok { border-left-color: var(--accent); }
+.rec .t { font-weight: 600; color: var(--text); }
+.rec .d { color: var(--dim); margin-top: 2px; }
+.rec .a { margin-top: 3px; }
+.whatif { display: grid; grid-template-columns: 1fr 1fr; gap: 6px 10px; }
+.whatif label { display: flex; flex-direction: column; gap: 2px; font-size: 11px; color: var(--dim); }
+.whatif label:first-child { grid-column: 1 / -1; }
+.inp { padding: 4px 6px; border-radius: 5px; border: 1px solid var(--line); background: var(--chip); color: var(--text); font: 12px system-ui, sans-serif; }
+.changes { display: flex; flex-direction: column; gap: 4px; margin-top: 8px; font-size: 12px; }
+.change { display: flex; align-items: center; gap: 8px; }
+.change b { font-weight: 600; }
+.btn.tiny { padding: 0 6px; font-size: 11px; line-height: 18px; margin-left: auto; }
+.rec-presets { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+table.sortable th { cursor: pointer; user-select: none; }
+table.sortable th:hover { color: var(--text); }
+table.sortable th.sort-asc::after { content: ' \25B4'; }
+table.sortable th.sort-desc::after { content: ' \25BE'; }
 .mono { font-family: Consolas, 'Cascadia Mono', monospace; font-size: 11.5px; }
 
 /* Status glyph text (color plus shape, spec section 7.1). */

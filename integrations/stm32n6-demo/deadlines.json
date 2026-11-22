@@ -1,0 +1,8 @@
+{
+  "description": "Deadlines of the stm32n6-demo's threads for zprof's schedulability analysis (serve --deadlines). Only these make the verdict; a periodic thread not listed is analysed against its period for information. release: the object a job starts from (its symbol, or \"sleep\"), when the thread waits longest on something else. period_us: a loop without one release object; a job is one period of its work.",
+  "threads": {
+    "main": { "deadline_us": 16667, "period_us": 16667, "why": "One panel refresh at 60 Hz: a frame handed over later is a dropped frame. Its loop sleeps one to three times a frame, so a job is one refresh period of its work" },
+    "audio_tid": { "deadline_us": 2679, "why": "One 128-frame block at the DAC's 47.78 kHz: a refill later is an underrun" },
+    "mic_tid": { "deadline_us": 2679, "why": "One 128-sample half of the microphone's DMA buffer at the same clock: later, the half is overwritten" }
+  }
+}

@@ -3,6 +3,7 @@ import { addIntervalSeries } from '../charts/IntervalSeries'
 import { KpiStrip } from '../charts/KpiStrip'
 import { hotFunctions, layout, MODULES, type Module } from '../sim/profile'
 import { fill, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 /** Synthetic call rates for the table (calls per second on the synthetic target). */
 const CALLS: Record<string, number> = {
@@ -73,7 +74,7 @@ export const engineeringProfile: View = ({ container, theme: t }) => {
   }
 
   // ---------------------------------------------------------------- hot functions table
-  const grid = dash.createDataGrid({ columnIndex: 0, rowIndex: 2, columnSpan: 2 }).setTitle('Hot functions by self time').setTitleFont((f) => f.setSize(13))
+  const grid = dataTable(dash, { columnIndex: 0, rowIndex: 2, columnSpan: 2 }).setTitle('Hot functions by self time').setTitleFont((f) => f.setSize(13))
   const maxSelf = hot[0].selfPct
   const rows: CellContent[][] = hot.slice(0, 16).map((h) => {
     const calls = CALLS[h.name]

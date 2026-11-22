@@ -11,6 +11,7 @@ import { anatomyRow } from './anatomy'
 import { go, takeFocus } from '../nav'
 import { button, el, esc, glyph, segmented, select } from '../dom'
 import { irqColor, threadColor, type View } from './common'
+import { dataTable } from '../charts/dataTable'
 
 type FindKind = 'inversion' | 'miss' | 'block' | 'coop' | 'param' | 'heap'
 const FIND: [FindKind, string][] = [
@@ -52,7 +53,7 @@ export const engineeringTrace: View = ({ container, theme: t }) => {
   dash2.setRowHeight(0, 0.8).setRowHeight(1, 1.7)
   const anat = dash2.createPanel(AnatomyChart, { columnIndex: 0, rowIndex: 0 }).setTitle('Response anatomy of the selected job').setTitleFont((f) => f.setSize(13))
   anat.setBudget(CTRL_BUDGET_US).setEmptyText('Select an event or a ctrl_loop span')
-  const log: DataGrid = dash2.createDataGrid({ columnIndex: 0, rowIndex: 1 }).setTitle('Event log, visible window').setTitleFont((f) => f.setSize(13))
+  const log: DataGrid = dataTable(dash2, { columnIndex: 0, rowIndex: 1 }).setTitle('Event log, visible window').setTitleFont((f) => f.setSize(13))
   log.setCellChangeHighlight(false)
 
   // ---------------------------------------------------------------- lanes and colors

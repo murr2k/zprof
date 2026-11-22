@@ -59,6 +59,7 @@ class Hello:
     ring_bytes: int = 0
     sender: int = 0
     hook_cost: int = 0  # timestamp ticks per hook, measured by the target at connect
+    classes: int = 0xFF  # kernel-object classes the target records (bit = id - OBJ_FIRST); its answer to a change too
 
 
 class StreamError(Exception):
@@ -176,6 +177,8 @@ class Decoder:
                 h.sender = struct.unpack_from("<I", v)[0]
             elif tag == P.HT_HOOK_COST:
                 h.hook_cost = struct.unpack_from("<I", v)[0]
+            elif tag == P.HT_CLASSES:
+                h.classes = struct.unpack_from("<I", v)[0]
             elif tag == P.HT_IRQ:
                 irq, prio, en, handler, arg = struct.unpack_from("<HBBII", v)
                 self.irqs[irq] = Irq(irq, prio, bool(en), handler, arg)

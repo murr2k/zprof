@@ -179,6 +179,8 @@ static int hello(int s)
 	err |= tlv(s, ZPROF_HT_RING, v, 4);
 	sys_put_le32((uint32_t)(uintptr_t)k_current_get(), v);
 	err |= tlv(s, ZPROF_HT_SENDER, v, 4);
+	sys_put_le32(zprof_classes, v);
+	err |= tlv(s, ZPROF_HT_CLASSES, v, 4);
 #ifdef CONFIG_GEN_SW_ISR_TABLE
 	for (unsigned int irq = 0; irq < IRQ_TABLE_SIZE && !err; irq++) {
 		const struct _isr_table_entry *e = &_sw_isr_table[irq];
@@ -254,6 +256,85 @@ static int drain(int s)
 	return 0;
 }
 
+/*
+ * Control from the host: frames on the control channel holding TLV commands.
+ * Read without waiting, a few bytes at a time, between sends; a frame too long
+ * for the buffer is skipped. Answers go out as TLV in a control frame.
+ */
+static uint8_t cb[64];
+static size_t cn;
+static uint32_t cskip;
+
+static int control(int s, const uint8_t *p, size_t n)
+{
+	while (n >= 4u) {
+		uint16_t tag = sys_get_le16(p);
+		uint16_t len = sys_get_le16(p + 2);
+
+		if (4u + len > n) {
+			break;
+		}
+		if (tag == ZPROF_CT_CLASSES && len == 4u) {
+			uint8_t v[4];
+
+			zprof_classes = sys_get_le32(p + 4) & BIT_MASK(ZPROF_OBJ_LAST - ZPROF_OBJ_FIRST + 1);
+			sys_put_le32(zprof_classes, v);
+			if (tlv(s, ZPROF_HT_CLASSES, v, sizeof(v)) < 0 || hflush(s) < 0) {
+				return -EIO;
+			}
+			LOG_INF("recording object classes 0x%02x", zprof_classes);
+		}
+		p += 4u + len;
+		n -= 4u + len;
+	}
+	return 0;
+}
+
+/* 0: nothing more for now; < 0: the client left or the connection broke */
+static int poll_control(int s)
+{
+	for (;;) {
+		ssize_t n = zsock_recv(s, &cb[cn], sizeof(cb) - cn, ZSOCK_MSG_DONTWAIT);
+
+		if (n == 0) {
+			return -ENOTCONN;
+		}
+		if (n < 0) {
+			return (errno == EAGAIN || errno == EWOULDBLOCK) ? 0 : -errno;
+		}
+		cn += (size_t)n;
+		for (;;) {
+			if (cskip > 0) {
+				size_t k = cskip < cn ? cskip : cn;
+
+				memmove(cb, &cb[k], cn - k);
+				cn -= k;
+				cskip -= k;
+				if (cskip > 0) {
+					break;
+				}
+			}
+			if (cn < ZPROF_FRAME_HDR) {
+				break;
+			}
+			uint32_t len = sys_get_le32(&cb[4]);
+
+			if (ZPROF_FRAME_HDR + len > sizeof(cb)) {
+				cskip = ZPROF_FRAME_HDR + len;   /* too long for us: step over it */
+				continue;
+			}
+			if (cn < ZPROF_FRAME_HDR + len) {
+				break;
+			}
+			if (cb[0] == ZPROF_CH_CONTROL && control(s, &cb[ZPROF_FRAME_HDR], len) < 0) {
+				return -EIO;
+			}
+			memmove(cb, &cb[ZPROF_FRAME_HDR + len], cn - ZPROF_FRAME_HDR - len);
+			cn -= ZPROF_FRAME_HDR + len;
+		}
+	}
+}
+
 static void session(int s)
 {
 	uint8_t pre[8] = {'Z', 'P', 'R', 'F'};
@@ -261,6 +342,11 @@ static void session(int s)
 
 	memset(seq, 0, sizeof(seq));
 	hn = 0;
+	cn = 0;
+	cskip = 0;
+	/* every session starts recording every class: a client that says nothing gets
+	 * them all, whatever the last one chose (the bridge sends its choice again) */
+	zprof_classes = BIT_MASK(ZPROF_OBJ_LAST - ZPROF_OBJ_FIRST + 1);
 	sys_put_le16(ZPROF_PROTO_VERSION, &pre[4]);
 	sys_put_le16(0, &pre[6]);
 	struct iovec iov = {.iov_base = pre, .iov_len = sizeof(pre)};
@@ -324,11 +410,8 @@ static void session(int s)
 			}
 			t_stats = now;
 		}
-		/* the client left? (control from the host comes in P2) */
-		uint8_t b[16];
-		ssize_t n = zsock_recv(s, b, sizeof(b), ZSOCK_MSG_DONTWAIT);
-
-		if (n == 0 || (n < 0 && errno != EAGAIN && errno != EWOULDBLOCK)) {
+		/* control from the host; also how a client that left is noticed */
+		if (poll_control(s) < 0) {
 			break;
 		}
 	}
@@ -365,6 +448,8 @@ static int listen_socket(void)
  */
 static void sender(void *p1, void *p2, void *p3)
 {
+	zprof_self = k_current_get();
+
 	int srv = listen_socket();
 	int fails = 0;
 

@@ -9,6 +9,7 @@
 #ifndef ZPROF_HOOKS_H_
 #define ZPROF_HOOKS_H_
 
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -25,6 +26,9 @@ void zprof_hook_prio(struct k_thread *thread, int prio);
 void zprof_hook_create(struct k_thread *thread);
 void zprof_hook_abort(struct k_thread *thread);
 void zprof_hook_name(struct k_thread *thread);
+
+/* A kernel-object record (proto.h): class id, call << 4 | phase, the object, a value. */
+void zprof_obj(uint8_t id, uint16_t arg, const void *obj, uint32_t val);
 
 /* Called by the architecture code; defined (strong) by zprof. */
 void sys_trace_isr_enter(void);

@@ -33,7 +33,9 @@ export interface LiveHello {
   /** New after the target rebooted: the timeline starts over. */
   epoch: number
 }
-/** The bridge's link to the target (not the page's link to the bridge). */
+/** What the target records, by task (the bridge's presets). */
+export interface LivePreset { id: string; title: string; classes: number; note: string }
+/** The bridge's link to the target (not the page's link to the bridge), and what it records. */
 export interface LiveStatus {
   type: 'status'
   link: 'connecting' | 'up' | 'down'
@@ -42,7 +44,82 @@ export interface LiveStatus {
   reboots: number
   source: 'live' | 'replay'
   target: string
+  /** A live target can be told what to record; a replay cannot. */
+  control?: boolean
+  presets?: LivePreset[]
+  /** The kernel-object classes the target records now (its own answer), and their preset if any. */
+  classes?: number | null
+  preset?: string | null
+  /** What the page asked for (applied again at every new session). */
+  want?: number | null
 }
+/** One thread or interrupt in the schedulability analysis; times in us. */
+export interface SchedRow {
+  key: string
+  name: string
+  kind: 'thread' | 'irq'
+  prio: number
+  coop: boolean
+  periodic: boolean
+  t_us: number | null
+  j_us: number
+  c_us: number
+  c_mean_us: number
+  c_p99_us: number
+  s_us: number
+  b_us: number
+  b_meas_us: number
+  b_by: string
+  d_us: number | null
+  d_src: 'declared' | 'period' | null
+  /** Its deadline is in the verdict (declared ones are, when any are). */
+  counts: boolean
+  /** A job is one declared period of the thread's work (a loop with no one release object). */
+  per_period: boolean
+  jobs: number
+  discarded: number
+  rate_s: number
+  u_pct: number
+  r_meas_us: number | null
+  r_p99_us: number | null
+  sender: boolean
+  /** Seconds into the observation when its longest job ended. */
+  c_max_at: number | null
+  /** The response-time bound; null with bounded false: none (the load can grow without limit). */
+  r_us: number | null
+  bounded: boolean
+  slack_pct?: number | null
+  status?: 'ok' | 'warn' | 'crit' | 'idle'
+  grow_us?: number
+  parts?: { c?: number; s?: number; b?: number; q?: number; by?: [string, number][] }
+}
+export interface SchedRec { level: 'crit' | 'warn' | 'info'; task: string; title: string; detail: string; advice: string }
+export interface LiveSched {
+  type: 'sched'
+  rows: SchedRow[]
+  deadlines: number
+  misses: number
+  worst_slack_pct: number | null
+  worst_task: string | null
+  u_pct: number
+  u_rm_pct: number
+  ll_pct: number
+  observed_s: number
+  jobs: number
+  discarded: number
+  gaps: number
+  whatif: boolean
+  scale?: number | null
+  /** A priority order (Audsley) that meets every deadline: thread -> new priority (changes only). */
+  order?: Record<string, number> | null
+  order_found?: boolean
+  recs: SchedRec[]
+  deadlines_src?: Record<string, string>
+  preset?: string | null
+  req?: number
+}
+/** What-if changes to one thread: priority, worst execution, period, deadline. */
+export interface SchedOverride { prio?: number; c_us?: number; t_us?: number; d_us?: number }
 export interface LiveThreadStat {
   lane: number | null
   name: string
@@ -56,6 +133,23 @@ export interface LiveThreadStat {
   sender: boolean
 }
 export interface LiveIrqStat { lane: number | null; name: string; per_s: number; cpu_pct: number; mean_us: number | null; max_us: number }
+export interface LiveObjStat {
+  name: string
+  cls: string
+  calls: string
+  calls_s: number
+  blocks_s: number
+  /** Calls that returned without the object: a timeout, -EBUSY, an empty poll, a NULL get. */
+  without: number
+  wait_mean_us: number | null
+  wait_max_us: number | null
+  /** Share of the window threads spent blocked on it (summed over threads). */
+  wait_pct: number
+  /** For a k_timer the "wait" is its expiry function's run time. */
+  timer: boolean
+  /** A mutex some thread blocked on (another held it): contention, not a thread's rest. */
+  contended: boolean
+}
 export interface LiveStats {
   type: 'stats'
   t_ms: number
@@ -71,10 +165,12 @@ export interface LiveStats {
   hooks_pct: number
   threads: LiveThreadStat[]
   irqs: LiveIrqStat[]
+  objects?: LiveObjStat[]
 }
 /** Timeline intervals, times in ms from the session start. */
 export interface IntervalBatch { n: number; t0: Float64Array; t1: Float64Array; lane: Uint16Array; code: Uint8Array; tMax: number }
-export const CODE = { RUN: 0, READY: 1, ISR: 2, DROP: 3 } as const
+/** BLOCKED: on a mutex another thread held; WAITING: for an event (a thread's normal rest). */
+export const CODE = { RUN: 0, READY: 1, ISR: 2, DROP: 3, BLOCKED: 4, WAITING: 5 } as const
 export type LinkState = 'connecting' | 'waiting' | 'open' | 'closed'
 
 type Off = () => void
@@ -109,6 +205,11 @@ export class LiveLink {
   private readonly batchL = new Set<(b: IntervalBatch) => void>()
   private readonly statsL = new Set<(s: LiveStats) => void>()
   private readonly stateL = new Set<(s: LinkState) => void>()
+  private readonly schedL = new Set<(s: LiveSched) => void>()
+  /** The last schedulability analysis of the measured system (every few seconds). */
+  sched: LiveSched | null = null
+  private req = 0
+  private readonly pending = new Map<number, (s: LiveSched) => void>()
 
   constructor(readonly url: string) { this.open() }
 
@@ -157,9 +258,39 @@ export class LiveLink {
       this.stats.push(s)
       if (this.stats.length > 120) this.stats.shift()
       for (const f of this.statsL) f(s)
+    } else if (m.type === 'sched') {
+      const s = m as LiveSched
+      if (s.req !== undefined && s.req !== null) {
+        const f = this.pending.get(s.req)
+        this.pending.delete(s.req)
+        f?.(s)
+        return
+      }
+      this.sched = s
+      for (const f of this.schedL) f(s)
     } else if (m.type === 'waiting') {
       this.setState('waiting')
     }
+  }
+
+  /** A message to the bridge; false when the page is not connected to one. */
+  send(m: object): boolean {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) return false
+    this.ws.send(JSON.stringify(m))
+    return true
+  }
+
+  /** Ask the target to record a preset's classes (the bridge keeps the choice). */
+  setPreset(id: string) { return this.send({ type: 'preset', id }) }
+
+  /** The measured system with these changes, analysed by the bridge. */
+  whatIf(overrides: Record<string, SchedOverride>): Promise<LiveSched> {
+    const req = ++this.req
+    return new Promise((resolve, reject) => {
+      if (!this.send({ type: 'whatif', req, overrides })) { reject(new Error('no bridge')); return }
+      this.pending.set(req, resolve)
+      window.setTimeout(() => { if (this.pending.delete(req)) reject(new Error('the bridge did not answer')) }, 15_000)
+    })
   }
 
   private binary(buf: ArrayBuffer) {
@@ -179,6 +310,7 @@ export class LiveLink {
   onStats(f: (s: LiveStats) => void): Off { this.statsL.add(f); return () => this.statsL.delete(f) }
   onState(f: (s: LinkState) => void): Off { this.stateL.add(f); return () => this.stateL.delete(f) }
   onStatus(f: (s: LiveStatus) => void): Off { this.statusL.add(f); return () => this.statusL.delete(f) }
+  onSched(f: (s: LiveSched) => void): Off { this.schedL.add(f); return () => this.schedL.delete(f) }
 
   close() {
     clearTimeout(this.timer)

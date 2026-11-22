@@ -15,7 +15,9 @@ import { reliabilitySoak } from './views/reliabilitySoak'
 import { reliabilityCompare } from './views/reliabilityCompare'
 import { targetSim, LINK_BUDGET_BPS, type Heartbeat } from './sim/target'
 import { liveTarget } from './views/liveTarget'
+import { liveSched } from './views/liveSched'
 import { liveLinkIfOpen } from './live/link'
+import { segmented } from './dom'
 import { bytesRate } from './format'
 import { ICONS } from './icons'
 import { setNavigator } from './nav'
@@ -37,6 +39,7 @@ const GROUPS: { role: string; views: Entry[] }[] = [
   // Real data from a target through the zprof bridge; the groups below are the mockup's simulated views.
   { role: 'Target', views: [
     { id: 'target', name: 'Live target', icon: 'live', view: liveTarget, live: true },
+    { id: 'sched', name: 'Schedulability', icon: 'timing', view: liveSched, live: true },
   ] },
   { role: 'Engineering', views: [
     { id: 'live', name: 'Live', icon: 'live', view: engineeringLive },
@@ -178,8 +181,36 @@ const chip = (k: string, v: string, cls = '') => `<span class="chip ${cls}">${k}
 const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
 let lastHb: Heartbeat | null = null
 
+// What the target records (the bridge's presets): on live views, for a live target.
+// Rebuilt only when the choices or the target's answer change, so it is never
+// replaced under the pointer.
+const presetsEl = document.getElementById('presets')!
+let presetsSig = ''
+function renderPresets() {
+  const st = current.live ? liveLinkIfOpen()?.status : null
+  const ok = !!(st && st.control && st.presets?.length)
+  const sig = ok ? `${st!.presets!.map((p) => p.id).join(',')}|${st!.preset}|${st!.want}` : ''
+  if (sig === presetsSig) return
+  presetsSig = sig
+  presetsEl.hidden = !ok
+  presetsEl.replaceChildren()
+  if (!ok) return
+  const ps = st!.presets!
+  presetsEl.append(Object.assign(document.createElement('span'), { textContent: 'recording' }))
+  const seg = segmented(ps.map((p) => [p.id, p.title] as [string, string]), st!.preset ?? '', (id) => liveLinkIfOpen()?.setPreset(id))
+  for (const b of seg.el.querySelectorAll('button')) {
+    const p = ps.find((x) => x.title === b.textContent)
+    if (p) b.title = p.note
+  }
+  presetsEl.append(seg.el)
+  if (!st!.preset && st!.classes !== null && st!.classes !== undefined) {
+    presetsEl.append(Object.assign(document.createElement('span'), { textContent: `classes 0x${st!.classes.toString(16)}` }))
+  }
+}
+
 function renderHeader() {
   const rl = document.getElementById('railLink')
+  renderPresets()
   if (current.live) {
     modeEl.textContent = 'live target'
     const l = liveLinkIfOpen()
