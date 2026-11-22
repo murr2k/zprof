@@ -537,7 +537,8 @@ class Task:
     s: float = 0.0                # worst self-suspension in one job
     b: float = 0.0                # blocking used by the analysis
     b_meas: float = 0.0           # worst measured time ready while a lower-priority thread ran
-    b_by: str = ""                # that thread
+    b_by: str = ""                # what makes b: that thread, or a cooperative one's longest run
+    b_meas_by: str = ""           # the thread of the measured inversion
     d: float | None = None        # deadline, us
     d_src: str | None = None      # "declared" or "period"
     periodic: bool = False
@@ -640,7 +641,7 @@ def build_model(jt: JobTracker, names, deadlines: dict[str, dict] | None = None,
         task = Task(
             key=f"t:{ptr}", name=name, kind="thread", prio=jt.prio(ptr), coop=jt.prio(ptr) < 0,
             c=j.c_max * us, curve=cv, s=j.s_max * us, b_meas=j.inv_max * us,
-            b_by=names(j.inv_by) if j.inv_by else "", d=d, d_src=src, periodic=periodic,
+            b_meas_by=names(j.inv_by) if j.inv_by else "", d=d, d_src=src, periodic=periodic,
             t=per * us if per else None, j=jit, jobs=j.jobs, discarded=j.discarded,
             c_mean=statistics.mean(cs) * us if cs else 0.0, c_p99=_p99(cs) * us,
             r_meas=j.r_max * us, r_p99=_p99(j.r) * us, rate=j.arrivals.n / span,
@@ -673,15 +674,7 @@ def build_model(jt: JobTracker, names, deadlines: dict[str, dict] | None = None,
     if any(t.d_src == "declared" for t in tasks):
         for t in tasks:
             t.counts = t.d_src == "declared"
-    # cooperative threads are not preempted by other threads: a lower-priority one that is
-    # running blocks a higher one for up to its longest run
-    for t in tasks:
-        below = [u for u in tasks if u.coop and u.prio > t.prio] if t.coop else []
-        longest = max(below, key=lambda u: u.seg_max, default=None)
-        t.b = t.b_meas
-        if longest is not None and longest.seg_max > t.b_meas:
-            when = f", {longest.seg_max_at:.1f} s in" if longest.seg_max_at is not None else ""
-            t.b, t.b_by = longest.seg_max, f"{longest.name} (its longest run{when})"
+    blocking(tasks)
     for irq, q in jt.irqs.items():
         if not q.count:
             continue
@@ -694,6 +687,28 @@ def build_model(jt: JobTracker, names, deadlines: dict[str, dict] | None = None,
                           t=per * us if per else None, jobs=q.count, rate=q.count / span,
                           work=q.work.curve(us)))
     return tasks
+
+
+def blocking(tasks: list[Task], moved: frozenset[str] | set[str] = frozenset()) -> None:
+    """Each thread's blocking `b`: the worst measured inversion, and the cooperative
+    threads below a cooperative one (they are not preempted by other threads: a
+    lower-priority one that is running blocks a higher one for up to its longest run).
+    `moved`: threads a what-if gave another priority. A measured inversion whose thread
+    moved where it can no longer block (above, or preemptible below a cooperative
+    thread) is dropped; the cooperative bound always follows the priorities given."""
+    th = {u.name: u for u in tasks if u.kind == "thread"}
+    for t in tasks:
+        if t.kind != "thread":
+            continue
+        t.b, t.b_by = t.b_meas, t.b_meas_by
+        u = th.get(t.b_meas_by)
+        if u is not None and u.name in moved and (u.prio <= t.prio or (t.coop and not u.coop)):
+            t.b, t.b_by = 0.0, ""
+        below = [u for u in th.values() if u.coop and u.prio > t.prio] if t.coop else []
+        longest = max(below, key=lambda u: u.seg_max, default=None)
+        if longest is not None and longest.seg_max > t.b:
+            when = f", {longest.seg_max_at:.1f} s in" if longest.seg_max_at is not None else ""
+            t.b, t.b_by = longest.seg_max, f"{longest.name} (its longest run{when})"
 
 
 # ---------------------------------------------------------------- response-time analysis
@@ -891,7 +906,9 @@ def analyze(tasks: list[Task], th: dict, full: bool = True, overrides: dict | No
     t_us, d_us}} for a what-if (a period replaces the measured arrivals with a strictly
     periodic one)."""
     if overrides:
-        tasks = [_override(t, overrides.get(t.name)) for t in tasks]
+        # copies: the measured model is shared with later analyses
+        tasks = [replace(_override(t, overrides.get(t.name))) for t in tasks]
+        blocking(tasks, {n for n, o in overrides.items() if o and o.get("prio") is not None})
     a = Analyzer(tasks)
     rows = []
     worst_slack, worst_task = INF, None
@@ -955,8 +972,6 @@ def _override(t: Task, o: dict | None) -> Task:
         t2.prio = float(o["prio"])
         if t.kind == "thread":
             t2.coop = t2.prio < 0      # Zephyr: a negative priority is a cooperative thread
-            if t.coop and not t2.coop:
-                t2.b = t.b_meas        # no longer blocked by cooperative threads below it
     if o.get("c_us") is not None and t.c > 0:
         f = float(o["c_us"]) / t.c        # every job and the workload in proportion
         t2.c = float(o["c_us"])

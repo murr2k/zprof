@@ -8,6 +8,16 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+### Fixed
+
+- What-ifs that move a thread now recompute the blocking it causes. A
+  cooperative thread made preemptible, or moved above, still counted as
+  blocking the threads above it, so "make rx_q[0] preemptible" left the
+  audio thread's blocking (and its bound) as measured. The measured
+  inversion is dropped when the thread that caused it can no longer block,
+  and the cooperative bound follows the priorities given
+  (`sched.blocking`); the plain analysis is unchanged.
+
 ## [0.3.0] - 2026-11-22
 
 The first public release: zprof as a SystemView work-alike over the

@@ -110,12 +110,34 @@ def test_workload_curves_bound_what_was_done() -> None:
 
 
 def test_a_what_if_priority_changes_the_kind() -> None:
-    from zprof_bridge.sched import _override
+    from zprof_bridge.sched import _override, blocking
     rx = task("rx", -1, 2, 10, coop=True, b=5)
     rx.b_meas = 1.0
     moved = _override(rx, {"prio": 4})
+    blocking([moved], {"rx"})
     assert not moved.coop and moved.prio == 4 and moved.b == 1.0   # preemptible: no cooperative blocking
     assert _override(rx, {"prio": -3}).coop
+
+
+def test_a_what_if_moves_the_thread_that_blocks() -> None:
+    # audio (cooperative) waits behind rx, a cooperative thread below it: measured, and
+    # bounded by rx's longest run. Made preemptible, rx blocks it no longer; moved but
+    # still cooperative below it, it still does. The measured model is left as it was.
+    from zprof_bridge.sched import blocking
+    audio, rx = task("audio", -14, 0.04, 2.7, coop=True), task("rx", -1, 0.2, 20, coop=True)
+    rx.seg_max = 0.3
+    audio.b_meas, audio.b_meas_by = 0.28, "rx"
+    blocking([audio, rx])
+    assert audio.b == 0.3 and audio.b_by.startswith("rx (its longest run")
+
+    def b(over):
+        out = analyze([audio, rx], TH.load(), full=False, overrides=over)
+        return next(r for r in out["rows"] if r["name"] == "audio")["b_us"]
+
+    assert b({"rx": {"prio": 1}}) == 0.0
+    assert b({"rx": {"prio": -2}}) == 0.3
+    assert b({"audio": {"c_us": 0.05}}) == 0.3
+    assert audio.b == 0.3 and rx.prio == -1
 
 
 def test_priority_order_and_room_to_grow() -> None:
