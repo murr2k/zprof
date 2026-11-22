@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 """Build zprof's annotated STM32N6 register workbook from ST's SVD.
 
 The workbook re-organizes ST's STM32N657.svd (Apache-2.0) for zprof work:

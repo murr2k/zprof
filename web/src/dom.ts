@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import type { Status } from './charts/status'
 
 /** Minimal DOM builders for view chrome (toolbars, cards, forms). */

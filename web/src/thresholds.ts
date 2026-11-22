@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import raw from '../../config/zprof.thresholds.json'
 import type { Status } from './charts/status'
 

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * The page's connection to the zprof bridge (`python -m zprof_bridge serve`,
  * ws://127.0.0.1:8786 unless ?bridge= says otherwise).

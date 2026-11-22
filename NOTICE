@@ -1,0 +1,17 @@
+zprof
+Copyright 2026 Murray Kopit
+
+Licensed under the Apache License, Version 2.0 (see LICENSE).
+
+This repository contains no third-party code. zprof is built and run with
+the following, each under its own licence and none of it copied here:
+
+- Zephyr RTOS (Apache-2.0): the firmware module is built inside a Zephyr
+  application; scripts/gen_trace_defaults.py generates code from the Zephyr
+  tree's include/zephyr/tracing/tracing.h at configure time.
+- Sferic Charts (MIT, https://github.com/murr2k/sferic-charts): the dashboard
+  imports it from source.
+- The npm packages in web/package-lock.json and the Python packages in
+  host/bridge/requirements.txt and host/svd/requirements.txt.
+- ST's SVD for the STM32N657 (Apache-2.0): host/svd/svd_workbook.py reads it
+  from ST's download; ST's text in the workbook it builds remains ST's.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /** Rail icons: 24 px stroke glyphs drawn in currentColor, so they follow the theme. */
 const svg = (body: string) =>
   `<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">${body}</svg>`

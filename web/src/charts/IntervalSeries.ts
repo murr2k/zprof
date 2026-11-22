@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { AxisTickStrategies, emptyLine, SolidFill, type Axis, type ChartXY, type Color } from 'sferic'
 import { SeriesXY, type CursorHit, type ResultTableRows } from 'sferic/xy/series/SeriesXY'
 import { RectBatch, type XYMaps } from 'sferic/render/draw'

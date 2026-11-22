@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, AxisTickStrategies, DashedLine, StipplePatterns, SolidLine, emptyLine, type CellContent } from 'sferic'
 import type { PointLineAreaSeries } from 'sferic/xy/series/PointLineAreaSeries'
 import type { ConstantLine, CustomTick } from 'sferic/xy/Axis'

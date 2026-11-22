@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, AxisTickStrategies, AxisScrollStrategies, DashedLine, StipplePatterns, type Color } from 'sferic'
 import { KpiStrip, type KpiTile } from '../charts/KpiStrip'
 import { AddressMap, type MapBlock, type MapRegion } from '../charts/AddressMap'

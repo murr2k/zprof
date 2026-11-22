@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, PointShape, DashedLine, StipplePatterns } from 'sferic'
 import type { PointLineAreaSeries } from 'sferic/xy/series/PointLineAreaSeries'
 import { KpiStrip, type KpiTile } from '../charts/KpiStrip'

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 // Screenshot zprof dashboard views in headless Chrome and list page errors and
 // WebGL warnings (the zprof invariant: zero of either on every view, both themes).
 // Uses Sferic's harness (Chrome with the GPU, puppeteer-core) from ../lightning.

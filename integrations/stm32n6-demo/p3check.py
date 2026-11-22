@@ -16,7 +16,7 @@ beat by beat, without two clocks read at different moments:
            semaphore) between two heartbeats == the change of audio.blocks; their
            mean interval, and the DAC rate it gives (128 frames a block)
 
-  python p3check.py --host 192.168.254.86 --secs 20 --elf <zephyr.elf> --demo <stm32n6-demo> [-o rec.zpr]
+  python p3check.py --host <board> --secs 20 --elf <zephyr.elf> --demo <stm32n6-demo> [-o rec.zpr]
   python p3check.py rec.zpr [--elf <zephyr.elf>]
 
 Live: records the session (the bridge must not hold it), sends the control port's

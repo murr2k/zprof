@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import type { Color, Theme } from 'sferic'
 
 /** Status levels shared by every widget (spec section 7: thresholds and alarms). */

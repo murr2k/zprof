@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { targetSim, AP, CTRL_BUDGET_US, EVENT_BYTES, LINK_BUDGET_BPS, OB, SWITCH_BYTES, TH, IDLE, type Job, type TargetSim } from './target'
 import { SoakSim, DUTS, isFailure } from './soak'
 import { linfit } from './rng'

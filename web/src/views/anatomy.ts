@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import type { Theme } from 'sferic'
 import type { AnatomyRow, AnatomySeg } from '../charts/AnatomyChart'
 import { statusColor } from '../charts/status'

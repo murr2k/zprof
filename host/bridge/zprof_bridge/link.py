@@ -15,6 +15,17 @@ DISCOVERY_PORT = 5557
 DEFAULT_PORT = 5560
 
 
+def parse_answer(data: bytes) -> dict[str, str]:
+    """An "N6HA ..." line as key=value services. "fw=" is last and its value has
+    spaces (the build's date and time), so it takes the rest of the line."""
+    text = data[5:].decode("ascii", "replace").strip()
+    head, sep, fw = text.partition(" fw=")
+    kv = dict(p.split("=", 1) for p in head.split() if "=" in p)
+    if sep:
+        kv["fw"] = fw.strip()
+    return kv
+
+
 def discover(timeout: float = 1.0) -> dict[str, dict[str, str]]:
     """Boards that answer the N6 discovery query: address -> their key=value services."""
     found: dict[str, dict[str, str]] = {}
@@ -30,8 +41,7 @@ def discover(timeout: float = 1.0) -> dict[str, dict[str, str]]:
             except (socket.timeout, ConnectionResetError):
                 continue
             if data[:4] == b"N6HA":
-                kv = dict(p.split("=", 1) for p in data[5:].decode("ascii", "replace").split() if "=" in p)
-                found[addr[0]] = kv
+                found[addr[0]] = parse_answer(data)
     except OSError:
         pass
     finally:

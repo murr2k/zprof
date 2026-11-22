@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /** Deterministic PRNG (mulberry32) so every reload shows the same synthetic story. */
 export function rng(seed: number) {
   let a = seed >>> 0

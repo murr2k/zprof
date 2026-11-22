@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import {
   sferic, AxisTickStrategies, AxisScrollStrategies, ColorRGBA, DashedLine, StipplePatterns, LUT, PalettedFill, UIOrigins,
   type CellContent,

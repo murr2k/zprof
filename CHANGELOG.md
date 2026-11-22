@@ -2,14 +2,22 @@
 
 All notable changes to zprof. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[Semantic Versioning](https://semver.org/). Unreleased work is private until
-the first release (after phase P3, PLANS.md section 0); the firmware module,
-the bridge and the live view run on the STM32N6570-DK, the other dashboard
-views are still the mockup on synthetic data.
+[Semantic Versioning](https://semver.org/). The firmware module, the bridge
+and the live views run on the STM32N6570-DK; the other dashboard views are
+still the mockup on synthetic data.
 
 ## [Unreleased]
 
+## [0.3.0] - 2026-11-22
+
+The first public release: zprof as a SystemView work-alike over the
+target's own Ethernet, through phase P3 (live timeline, recordings and
+replay, Perfetto export, capture-then-upload, schedulability analysis,
+metrics and application marks).
+
 ### Added
+
+- `LICENSE` (Apache-2.0), `NOTICE`, and an SPDX line in every source file.
 
 - zprof is now a SystemView work-alike over the target's own Ethernet
   (PLANS.md section 0): first target the STM32N6570-DK running the
@@ -236,6 +244,15 @@ views are still the mockup on synthetic data.
 - README: the N6 on-chip trace path (STM events into an ETR RAM ring) as a
   candidate to replace RTT streaming, and the spike that opens Phase A; a
   Mermaid diagram of the path there and in the review's section 5.
+- README rewritten for the release: what zprof records and shows, the cost
+  and agreement measured on the STM32N6570-DK, how to add the module to a
+  Zephyr application, the bridge and the dashboard; screenshots of the live
+  views from the board; the mockup views labelled as simulated.
+
+### Fixed
+
+- `discover` showed only the first word of a board's build date (`fw=` has
+  spaces and ends the line); it also names the board now.
 
 ## [0.2.0] - 2026-10-20
 
@@ -335,5 +352,6 @@ visualizations, an intelligence layer, and a safe write path to the target.
 - Thresholds file with JSON Schema: live alarms, run pass criteria, build gate.
 - Zephyr `main` pinned by SHA in `firmware/west.yml`.
 
-[Unreleased]: https://github.com/murr2k/zprof/compare/v0.2.0...HEAD
+[Unreleased]: https://github.com/murr2k/zprof/compare/v0.3.0...HEAD
+[0.3.0]: https://github.com/murr2k/zprof/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/murr2k/zprof/releases/tag/v0.2.0

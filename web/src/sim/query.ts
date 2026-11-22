@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import {
   AP, API, IRQS, LANES, OB, OBJECTS, PARAMS, RS, THREADS, laneOfThread, threadOfLane,
   type EventRing, type IntervalLog, type Job,

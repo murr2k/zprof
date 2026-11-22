@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { Themes, type Theme } from 'sferic'
 import type { View } from './views/common'
 import { engineeringLive } from './views/engineeringLive'

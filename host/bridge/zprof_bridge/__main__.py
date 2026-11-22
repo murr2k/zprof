@@ -46,7 +46,7 @@ def cmd_discover(a: argparse.Namespace) -> None:
     if not boards:
         print("no board answered on udp/5557")
     for ip, kv in boards.items():
-        print(f"{ip}  prof={kv.get('prof', '(none)')}  fw={kv.get('fw', '?')}")
+        print(f"{ip}  {kv.get('board', '?')}  prof={kv.get('prof', '(none)')}  fw={kv.get('fw', '?')}")
 
 
 def cmd_capture(a: argparse.Namespace) -> None:

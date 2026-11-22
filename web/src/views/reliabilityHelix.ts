@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, LUT, PalettedFill, PointStyle3D, SolidFill, SolidLine, regularColorSteps, type CellContent, type Color } from 'sferic'
 import { SoakSim, DUTS, chamber, isFailure, type Phase, type SoakEvent } from '../sim/soak'
 import { button, el, esc, glyph, segmented } from '../dom'

@@ -1,3 +1,4 @@
+# SPDX-License-Identifier: Apache-2.0
 # west manifest for zprof (zephyr-dev).
 # The repo root is the west workspace: from it run
 #   west init -l firmware

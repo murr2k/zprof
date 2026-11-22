@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, AxisTickStrategies, ColorShadingStyles, LUT, PalettedFill, SolidFill, type CellContent } from 'sferic'
 import { EmptyTickStrategy, type Tick, type TickContext } from 'sferic/xy/ticks'
 import type { SurfaceGridSeries3D } from 'sferic/chart3d/surface3d'

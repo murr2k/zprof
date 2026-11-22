@@ -14,9 +14,11 @@ the dashboard in the browser. First target: the STM32N6570-DK running
 `~/projects/stm32n6-demo` (Zephyr v4.4.0); the Zynq PS later. Plan:
 `docs/PLANS.md` section 0 (decisions, phases P0 to P5 and the first release
 R1 after P3); wire format: `docs/PROTOCOL.md`. Built so far: the firmware
-module (trace, kernel objects, capture presets from the host), the bridge (live,
-recordings, Perfetto export, schedulability analysis) and two live views (Live
-target, Schedulability: `docs/SCHEDULABILITY.md`); the other views are the mockup.
+module (trace, kernel objects, capture presets from the host, capture-then-upload,
+metrics heartbeat, marks, plots, prints), the bridge (live, recordings, replay
+check, Perfetto export, schedulability analysis) and three live views (Live
+target, Schedulability: `docs/SCHEDULABILITY.md`, Timing); the other views are
+the mockup. Public since v0.3.0 (R1, 2026-11-22).
 
 ## Run / build / test
 
@@ -80,7 +82,7 @@ cd web; npx tsc --noEmit       # must stay clean
 - Zero page errors and zero WebGL warnings on every view, both themes, before calling a change done. **Why:** Sferic drops bad draws silently; warnings are the only signal. Check with `web/scripts/snap.mjs` (headless; the Chrome extension's screenshots time out on these pages). The Live target view needs a bridge for that: without one the browser logs its failed connection as an error, which a page cannot suppress.
 - No limits hard-coded in views: statuses, zones and criteria come from `config/zprof.thresholds.json`. **Why:** pass criteria must be defined once and shared by the bridge, the dashboard and the run report.
 - Zephyr is pinned by SHA, never `revision: main`. **Why:** Build compare needs identical Zephyr on both sides; bumping the pin means re-checking spec section 3 sources.
-- **Private until the first release (R1, after P3); nothing in the public stm32n6-demo repo may announce zprof before then.** Demo-side changes (discovery `prof=`, port hooks, markers) live on the demo's local branch `zprof-integration`, never pushed before R1; the demo's build conf lives here. **Why:** the user's decision, 2026-11-21.
+- **Public since R1 (v0.3.0, 2026-11-22), Apache-2.0: keep private paths, serial numbers, credentials and camera footage out of every commit; every source file carries an SPDX line.** The demo fetches zprof with west (`app/west.yml`, group `zprof`, pinned to a tag) and builds it with `n6.cmd go -p --zprof`; its build conf, deadlines and checks live here in `integrations/stm32n6-demo/`. **Why:** the user's decision, 2026-11-21 (private until R1, after P3); the history was audited before it went public.
 - **A broken link recovers by itself, end to end: never add a step that needs a restart.** The target ends a session on a failed or 5 s stalled send and keeps listening (the listening socket is made again if accept keeps failing); the bridge re-makes the connection (3 s silent = broken, back-off 0.5 to 5 s), places every session on the target's clock since boot (anchored at its first SYNC), so the page's timeline continues after a gap and rebuilds only for a reboot (a new `epoch`) or new lanes. **Why:** the user's requirement, 2026-11-21 (replugging, errors). Measured on the N6: a reflash (board reset) reconnected 1 s after the board's network was up; a carrier drop of 4 s (`ctl.py "carrier 4000"` in the demo) ended the board's session at once, 0 records lost, and streaming resumed 0.5 s after the link returned.
 - **Kernel-object calls that may block (sem take, mutex lock, msgq put and get, queue get) are one record unless they block.** No ENTER; EXIT carries the return; BLOCK (then EXIT) carries the timeout or a mutex's owner. **Why:** with an ENTER and an EXIT for every call, object events doubled the stream (20,000 to 39,000 events a second on the demo) and a tour lost 3.6 million records; with one record per call and the demo's sender at priority 1 (`integrations/stm32n6-demo/zprof.conf`), 167,000. A waiting thread is drawn as rest (thin, neutral), a thread blocked on a mutex another holds as contention (red): most threads spend their lives waiting on a semaphore, which is not a fault.
 - **The schedulability verdict is measurement-based and says so ("under the load observed"); a measured thread interferes with its workload curve (the most work it did in any window), never its densest arrivals times its worst job.** **Why:** network receive threads run bursts of small jobs and a rare long one: arrivals times the worst job exceeded the CPU, and every thread below them had no bound. Only declared deadlines make the verdict when any are declared (polling loops have periods, not deadlines). Model and blind spots: `docs/SCHEDULABILITY.md`.

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 export const pct = (v: number, d = 1) => `${v.toFixed(d)}`
 export const us = (v: number) => (v >= 1000 ? `${(v / 1000).toFixed(2)} ms` : `${v.toFixed(v < 10 ? 1 : 0)} us`)
 export const kib = (b: number, d = 1) => `${(b / 1024).toFixed(d)}`

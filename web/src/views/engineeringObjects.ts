@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, type CellContent, type Color, type HierarchyNodeData } from 'sferic'
 import { FlowGraph, type FlowEdge, type FlowNode } from '../charts/FlowGraph'
 import { targetSim, AP, IRQS, OB, OBJECTS, RS, THREADS, TH, LINK_BUDGET_BPS, API, threadOfLane, type Heartbeat } from '../sim/target'

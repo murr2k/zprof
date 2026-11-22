@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Synthetic statistical function profile (Phase D) of the same synthetic target:
  * samples per call path, idle excluded. Shape: [name, module, self samples, children].

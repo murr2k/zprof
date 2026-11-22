@@ -1,9 +1,10 @@
+// SPDX-License-Identifier: Apache-2.0
 import { defineConfig } from 'vite'
 import { fileURLToPath } from 'node:url'
 
 // Sferic is consumed from source (../../lightning/src) so the mockup can use
 // renderer internals (RectBatch, SegmentBatch, SeriesXY) for its new chart types.
-// Port 8781 is allocated in ~/.claude/port-registry.md.
+// Port 8781, fixed (strictPort): the bridge and the docs name it.
 const sfericSrc = fileURLToPath(new URL('../../lightning/src', import.meta.url))
 const repoRoot = fileURLToPath(new URL('..', import.meta.url))
 

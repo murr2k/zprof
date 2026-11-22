@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { Panel } from 'sferic'
 import type { PanelOptions } from 'sferic/core/Panel'
 import type { PointerInfo, Surface } from 'sferic/render/Surface'

@@ -1,6 +1,7 @@
 @echo off
-rem zprof dashboard mockup (synthetic data) at http://127.0.0.1:8781
-rem Port 8781 is allocated in ~/.claude/port-registry.md. Extra args go to vite.
+rem SPDX-License-Identifier: Apache-2.0
+rem zprof dashboard at http://127.0.0.1:8781 (live views need the bridge, python -m zprof_bridge serve)
+rem Port 8781 is fixed (vite.config.ts). Extra args go to vite.
 setlocal
 set "ROOT=%~dp0"
 if not exist "%ROOT%web\node_modules\.bin\vite.cmd" (

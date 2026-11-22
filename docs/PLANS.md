@@ -53,7 +53,9 @@ on Home and over 60 s of the attract lap, frame marks equal the frames counted
 the refresh period (16,673 us), the drops the trace implies equal
 `gfx.dropped`, `margin_min_us` equals the least plotted margin at every
 heartbeat (560 checked), and the audio thread's refill wakeups equal the DAC's
-blocks (22,300 of 22,300). Next: R1.
+blocks (22,300 of 22,300). R1 on 2026-11-22: v0.3.0, the repository made public
+(Apache-2.0, history kept: audited, nothing private in it), the demo fetching
+zprof with west. Next: P4.
 
 ## 1. Goal
 

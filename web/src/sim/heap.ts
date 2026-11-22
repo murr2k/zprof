@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Chunk-level model of a Zephyr sys_heap for the heap X-ray: 8-byte chunk
  * units, one header chunk per allocation, coalescing on free. sys_heap really

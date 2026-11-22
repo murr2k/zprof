@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, AxisTickStrategies, AxisScrollStrategies, type CellContent, type Theme } from 'sferic'
 import { KpiStrip, type KpiTile } from '../charts/KpiStrip'
 import { dataTable } from '../charts/dataTable'

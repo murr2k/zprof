@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { ColorRGBA, SolidFill, SolidLine, type Color, type Theme } from 'sferic'
 
 export interface ViewContext {

@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, ColorRGBA, type Color, type DataGrid } from 'sferic'
 import { SequenceTrace, fmtFull, type SeqFrame, type SeqItem, type SeqLane, type SeqLink, type SeqMark, type SeqSource, type SeqSpan } from '../charts/SequenceTrace'
 import { AnatomyChart } from '../charts/AnatomyChart'

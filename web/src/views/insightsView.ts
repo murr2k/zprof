@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { insights, type Insight } from '../sim/insights'
 import { targetSim } from '../sim/target'
 import { go } from '../nav'

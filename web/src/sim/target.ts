@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { expo, gauss, rng, uniform, quantile } from './rng'
 import { HeapSim } from './heap'
 

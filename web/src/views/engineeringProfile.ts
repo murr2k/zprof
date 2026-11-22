@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 import { sferic, AxisTickStrategies, BarChartTypes, type CellContent } from 'sferic'
 import { addIntervalSeries } from '../charts/IntervalSeries'
 import { KpiStrip } from '../charts/KpiStrip'

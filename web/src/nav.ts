@@ -1,3 +1,4 @@
+// SPDX-License-Identifier: Apache-2.0
 /**
  * Cross-view navigation: one view hands another a focus (a time, a job, a
  * parameter to prefill) and switches to it. The target view takes the focus
