@@ -44,6 +44,9 @@ button, input, select { font: inherit; color: inherit; }
 .chip b { color: var(--text); font-weight: 600; }
 .pill { display: inline-flex; align-items: center; gap: 6px; }
 .dot { width: 8px; height: 8px; border-radius: 50%; background: var(--ok); box-shadow: 0 0 6px var(--ok); }
+/* a link that is down and being re-made: amber, hollow (color plus shape, spec section 7.1) */
+.pill.warn .dot { background: transparent; border: 2px solid var(--warn); box-shadow: 0 0 6px var(--warn); width: 4px; height: 4px; }
+.pill.warn b { color: var(--warn); }
 .theme { border: 1px solid var(--line); background: var(--chip); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
 @media (max-width: 1280px) { .target .opt { display: none; } }
 

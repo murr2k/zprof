@@ -19,8 +19,12 @@ __pycache__/
 web/node_modules/
 web/dist/
 
-# Recordings from the bridge can be large
+# Recordings from the bridge can be large, and name the user's threads and
+# hosts; captures/ is where they go by default
 *.zprec
+*.zpr
+captures/
+.pytest_cache/
 
 # Editor / OS
 .vscode/

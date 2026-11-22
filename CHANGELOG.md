@@ -2,13 +2,77 @@
 
 All notable changes to zprof. The format follows
 [Keep a Changelog](https://keepachangelog.com/en/1.1.0/); versions follow
-[Semantic Versioning](https://semver.org/). Until 1.0 the project is a design
-and a dashboard mockup on synthetic data; no firmware or bridge has shipped.
+[Semantic Versioning](https://semver.org/). Unreleased work is private until
+the first release (after phase P3, PLANS.md section 0); the firmware module,
+the bridge and the live view run on the STM32N6570-DK, the other dashboard
+views are still the mockup on synthetic data.
 
 ## [Unreleased]
 
 ### Added
 
+- zprof is now a SystemView work-alike over the target's own Ethernet
+  (PLANS.md section 0): first target the STM32N6570-DK running the
+  stm32n6-demo; phases P0 to P5, first public release after P3.
+- `firmware/zprof/`: the Zephyr module, Zephyr's tracing format through
+  `CONFIG_TRACING_CUSTOM`. The hooks it does not record (367 at v4.4.0) are
+  generated empty from the pinned `tracing.h` at configure time
+  (`scripts/gen_trace_defaults.py`), so a new hook in a later Zephyr is empty
+  instead of a build break. The hooks run from RAM on an XIP image. On the
+  demo the module costs about 5 KB of image and 70 KB of internal RAM (its
+  64 KB ring).
+- `integrations/stm32n6-demo/zprof.conf`: the demo's zprof build, with the
+  tracing classes that default on and would hurt (syscalls, networking, power
+  management) turned off.
+- `docs/PROTOCOL.md`: the wire format (TCP frames, records, time, hello, the
+  `.zpr` recording).
+- P1, data off the target: the hooks write timestamped records (switches
+  with the switch reason, interrupts with their IRQ number, idle, ready, pend,
+  priority, create, abort, rename) into a ring in internal RAM under one IRQ
+  lock, DWT cycle counter timestamps; a sender thread serves tcp/5560 with a
+  hello (versions, build id, clocks, thread and interrupt tables), SYNC
+  records, the kernel's own per-thread counts once a second, and the measured
+  cost of a hook. A per-build id identifies the ELF.
+- `host/bridge/`: `python -m zprof_bridge discover | capture | summary`:
+  records a session to a replayable `.zpr`, names threads, interrupts and
+  wait queues from the ELF, and reports per-thread CPU, interrupts, wake
+  latency, time in WFI and zprof's own cost; unit tests on synthetic streams.
+- Measured on the stm32n6-demo: per-thread CPU from the trace agrees with the
+  kernel's own counts within 0.03 points; the DWT counter runs through WFI;
+  a hook costs 159 ns; about 10,000 events a second on Home (110 KB/s) and
+  12,500 through a full regression tour, with zprof at 1.2 % of the CPU (plus
+  about 0.3 % in the network stack). With a client streaming through the
+  whole tour: 0 dropped frames, 0 audio underruns, 0 trace records lost in
+  7.5 million.
+- `config/zprof.thresholds.json`: observer A/B criteria (the application's
+  own faults with zprof streaming, trace records lost). Found and fixed on
+  the way: a 1.5 MB transfer by another service made up to 130,000 events a
+  second, which filled a 32 KB ring between two of the sender's looks (0.13 %
+  of a tour's events lost); the sender now looks every 2 ms while the ring
+  fills fast, and the demo's ring is 64 KB.
+- P2 so far: the live dashboard. `python -m zprof_bridge serve` decodes a
+  target (or replays a recording) and serves 127.0.0.1:8786; the new Live
+  target view shows the board as it runs: KPIs (CPU busy, switches,
+  interrupts, trace events and bytes, records dropped, zprof's own cost),
+  the scheduler timeline (interrupts by their handler, threads by priority,
+  ready waits, drop marks), CPU by thread per second and the thread and
+  interrupt tables. Interrupts are named by their handler from the ELF, with
+  the chip's name when a device header is given. The other views are still
+  the mockup on synthetic data. The header describes only what the current
+  view shows: on the live view the target's address, its Zephyr version,
+  whether the ELF is the board's build and the link rate; on a mockup view
+  the simulator's invented target, labelled simulated (it used to show both
+  at once, and "mockup, synthetic data" on the live view).
+- The stream recovers by itself from a broken link (a cable replugged, a
+  switch rebooting, an error, the target reset): the bridge reconnects with a
+  back-off, the timeline runs on the target's clock so it continues after the
+  gap, a reboot starts a new one, the header and the timeline title say when
+  the link is down and why, and recordings mark the reconnects. On the N6:
+  streaming resumed 0.5 s after a 4 s carrier drop came back, with 0 records
+  lost, and 1 s after a reset board's network was up.
+- `python -m zprof_bridge export`: Trace Event JSON for ui.perfetto.dev.
+- `web/scripts/snap.mjs`: headless screenshots of views with every page
+  error and WebGL warning listed (Sferic's harness).
 - `docs/OBSERVABILITY_AND_SVD_REVIEW.md`: what Zephyr's observability
   services and ST's STM32N6 SVD add to fidelity, features and testing, with
   16 ranked recommendations; the first is a spike on the N6's on-chip STM and
@@ -30,6 +94,17 @@ and a dashboard mockup on synthetic data; no firmware or bridge has shipped.
 
 ### Changed
 
+- Zephyr pinned to v4.4.0 (684c9e8f) instead of `main` a915b2f1; zcbor
+  dropped from the manifest (no CBOR). DASHBOARD_SPEC.md section 3 re-checked
+  at v4.4.0: 14 corrections in a table at its head (no
+  `tracing_packet_drop_count_get`, one `cpu_load` implementation, no
+  largest-free-block heap API, no CTF heap, fifo or pipe events, inheritance
+  boosts traced as `sched_priority_set`, `assert_post_action`, no PMU API).
+- PLANS.md: section 0 with the 2026-11-21 decisions (target Ethernet with an
+  observer A/B as the answer to section 8's objection, the zprof trace format
+  through `TRACING_CUSTOM`, no CBOR, names from the ELF, release after P3), and
+  corrections where the earlier text named `TRACING_FORMAT_HEADER` or relied
+  on `main`.
 - DASHBOARD_SPEC.md section 11: the perf sampler's real requirements
   (`CORTEX_M_SYSTICK`, `THREAD_STACK_INFO`, `ARCH_STACKWALK`, which on
   Cortex-M needs `EXTRA_EXCEPTION_INFO`, a Secure image, no SMP); new rows for

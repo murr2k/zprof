@@ -13,7 +13,9 @@ import { insightsView } from './views/insightsView'
 import { insights } from './sim/insights'
 import { reliabilitySoak } from './views/reliabilitySoak'
 import { reliabilityCompare } from './views/reliabilityCompare'
-import { targetSim, LINK_BUDGET_BPS } from './sim/target'
+import { targetSim, LINK_BUDGET_BPS, type Heartbeat } from './sim/target'
+import { liveTarget } from './views/liveTarget'
+import { liveLinkIfOpen } from './live/link'
 import { bytesRate } from './format'
 import { ICONS } from './icons'
 import { setNavigator } from './nav'
@@ -23,12 +25,18 @@ interface Entry {
   name: string
   icon: string
   view: View
+  /** Real data from a target through the bridge; every other view is the mockup on the simulator. */
+  live?: boolean
   /** Live counts for a rail badge (crit wins the color). */
   badge?: () => { crit: number; warn: number }
 }
 const GROUPS: { role: string; views: Entry[] }[] = [
   { role: 'Intelligence', views: [
     { id: 'insights', name: 'Insights', icon: 'insights', view: insightsView, badge: () => insights().summary() },
+  ] },
+  // Real data from a target through the zprof bridge; the groups below are the mockup's simulated views.
+  { role: 'Target', views: [
+    { id: 'target', name: 'Live target', icon: 'live', view: liveTarget, live: true },
   ] },
   { role: 'Engineering', views: [
     { id: 'live', name: 'Live', icon: 'live', view: engineeringLive },
@@ -80,6 +88,8 @@ function render() {
   const g = GROUPS.find((x) => x.views.includes(current))!
   crumbEl.innerHTML = `${g.role} / <b>${current.name}</b>`
   cleanup = current.view({ container: host, theme })
+  watchLive()
+  renderHeader()
 }
 
 function show(id: string) {
@@ -160,18 +170,68 @@ window.addEventListener('hashchange', () => {
 })
 
 // Target identity and link health: the common header every view shares (spec section 5.1).
+// It describes only what the current view shows: the real target on a live view, the
+// simulator's invented one on a mockup view, never both.
 const sim = targetSim()
+const modeEl = document.getElementById('mode')!
 const chip = (k: string, v: string, cls = '') => `<span class="chip ${cls}">${k} <b>${v}</b></span>`
-sim.onHeartbeat((h) => {
-  if (h.seq % 5) return
-  const util = (h.linkBps / LINK_BUDGET_BPS) * 100
+const esc = (s: string) => s.replace(/[&<>"]/g, (c) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;' })[c]!)
+let lastHb: Heartbeat | null = null
+
+function renderHeader() {
+  const rl = document.getElementById('railLink')
+  if (current.live) {
+    modeEl.textContent = 'live target'
+    const l = liveLinkIfOpen()
+    if (!l || l.state !== 'open' || !l.hello) {
+      targetEl.innerHTML = chip('bridge', l ? l.state : 'not opened', 'opt')
+      if (rl) rl.textContent = 'no target'
+      return
+    }
+    const h = l.hello, s = l.stats[l.stats.length - 1], st = l.status
+    const build = h.elf ? (h.elf_ok === false ? 'OTHER BUILD' : h.elf_ok ? 'the board\'s build' : '') : 'no ELF'
+    const down = st?.link === 'down'
+    const pill = down
+      ? `<span class="chip pill warn" title="${esc(st!.why)}"><span class="dot"></span>${h.source === 'replay' ? 'recording' : 'TCP'} <b>${h.source === 'replay' ? 'ended' : 'reconnecting'}</b></span>`
+      : `<span class="chip pill"><span class="dot"></span>${h.source === 'replay' ? 'recording' : 'TCP'} <b>${s ? `${s.kbytes_s.toFixed(0)} KB/s` : '...'}</b></span>`
+    const sessions = st && st.sessions > 1 ? chip('sessions', `${st.sessions}${st.reboots ? `, ${st.reboots} reboot(s)` : ''}`, 'opt') : ''
+    targetEl.innerHTML =
+      chip(h.source === 'replay' ? 'replay' : 'target', esc(h.target)) +
+      chip('zephyr', esc(h.kernel)) +
+      chip('elf', `${esc(h.elf ?? '')} ${build}`.trim(), h.elf_ok === false ? '' : 'opt') +
+      sessions + pill
+    if (rl) rl.textContent = down ? `link down: ${st!.why}` : h.source === 'replay' ? 'replaying a recording' : 'target streaming'
+    return
+  }
+  modeEl.textContent = 'mockup, synthetic data'
+  const hb = lastHb
+  if (!hb) return
+  const util = (hb.linkBps / LINK_BUDGET_BPS) * 100
   targetEl.innerHTML =
-    chip('targets', 'Zynq PS, STM32N6570-DK (synthetic data)', 'opt') +
+    chip('simulated', 'synthetic target', 'opt') +
     chip('fw', 'v1.5.0-rc1 g3f9c2e1', 'opt') +
     chip('zephyr', 'main a915b2f1', 'opt') +
-    `<span class="chip pill"><span class="dot"></span>RTT ch1 <b>${bytesRate(h.linkBps)}</b> ${util.toFixed(0)}%</span>`
-  const rl = document.getElementById('railLink')
-  if (rl) rl.textContent = `up ${Math.floor(h.uptimeMs / 3.6e6)} h ${Math.floor((h.uptimeMs % 3.6e6) / 60000)} min`
+    `<span class="chip pill"><span class="dot"></span>RTT ch1 <b>${bytesRate(hb.linkBps)}</b> ${util.toFixed(0)}%</span>`
+  if (rl) rl.textContent = `simulated, up ${Math.floor(hb.uptimeMs / 3.6e6)} h ${Math.floor((hb.uptimeMs % 3.6e6) / 60000)} min`
+}
+
+// Live views refresh the header from the bridge link once a live view has opened it.
+let liveWatched = false
+function watchLive() {
+  const l = liveLinkIfOpen()
+  if (liveWatched || !l) return
+  liveWatched = true
+  const refresh = () => { if (current.live) renderHeader() }
+  l.onHello(refresh)
+  l.onState(refresh)
+  l.onStats(refresh)
+  l.onStatus(refresh)
+}
+
+sim.onHeartbeat((h) => {
+  if (h.seq % 5) return
+  lastHb = h
+  if (!current.live) renderHeader()
 })
 
 refreshBadges()

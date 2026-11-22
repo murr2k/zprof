@@ -27,7 +27,7 @@
     { "metric": "span.*.overrun", "unit": "count", "op": ">", "crit": 0 },
     { "metric": "link.util", "unit": "%", "op": ">=", "warn": 70, "crit": 90 },
     { "metric": "link.lost_pct", "unit": "%", "op": ">", "warn": 0, "crit": 0.1 },
-    { "metric": "agent.self", "unit": "%", "op": ">=", "warn": 1, "crit": 3 }
+    { "metric": "agent.self", "unit": "%", "op": ">=", "warn": 1, "crit": 3, "note": "Shown, not a pass criterion: the gate is the application's deadlines (criterion observer-app)" }
   ],
 
   "criteria": [
@@ -40,7 +40,9 @@
     { "id": "ctrl-p99", "title": "ctrl_loop p99", "metric": "span.ctrl_loop.p99", "agg": "max", "per": "dut", "unit": "us", "op": ">", "warn": 425, "crit": 500 },
     { "id": "cpu-p95", "title": "CPU p95", "metric": "cpu.load.p95", "agg": "max", "per": "dut", "unit": "%", "op": ">", "crit": 70 },
     { "id": "telemetry-loss", "title": "Telemetry loss", "metric": "link.lost_pct", "agg": "max", "per": "run", "unit": "%", "op": ">", "warn": 0.05, "crit": 0.1 },
-    { "id": "mtbf", "title": "MTBF lower bound (90%)", "metric": "run.mtbf_lower", "agg": "last", "per": "run", "unit": "h", "op": "<", "crit": 1000, "confidence": 0.9 }
+    { "id": "mtbf", "title": "MTBF lower bound (90%)", "metric": "run.mtbf_lower", "agg": "last", "per": "run", "unit": "h", "op": "<", "crit": 1000, "confidence": 0.9 },
+    { "id": "observer-app", "title": "Observer A/B: the application's own faults with zprof streaming (dropped frames, audio underruns)", "metric": "observer.app_faults", "agg": "count", "per": "run", "op": ">", "crit": 0 },
+    { "id": "observer-loss", "title": "Observer A/B: trace records dropped", "metric": "trace.dropped_pct", "agg": "max", "per": "run", "unit": "%", "op": ">", "warn": 0, "crit": 0.1 }
   ],
 
   "gate": [

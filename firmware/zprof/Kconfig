@@ -1,0 +1,106 @@
+# zprof: runtime trace and metrics for Zephyr, streamed off the target.
+# SPDX-License-Identifier: Apache-2.0
+
+config ZPROF
+	bool "zprof runtime trace and metrics"
+	depends on TRACING_CUSTOM
+	select THREAD_NAME
+	select THREAD_MONITOR
+	select THREAD_STACK_INFO
+	help
+	  zprof records scheduler, interrupt and kernel-object events with
+	  cycle timestamps into a RAM ring and sends them to the zprof host
+	  bridge. It is Zephyr's tracing format for the build: select
+	  TRACING_CUSTOM (the module supplies zephyr_custom_tracing.h).
+
+if ZPROF
+
+config ZPROF_HOOKS_IN_RAM
+	bool "Run the trace hooks from RAM"
+	default y if XIP && ARCH_HAS_RAMFUNC_SUPPORT
+	help
+	  Place the hooks that run on every context switch, interrupt and
+	  idle entry in RAM (__ramfunc). On an XIP image an instruction-cache
+	  miss in a hook would otherwise fetch from external flash.
+
+config ZPROF_RING_SIZE
+	int "Event ring, bytes (a power of two)"
+	default 32768
+	help
+	  In internal RAM: the hooks write it from interrupts and the
+	  context switch, where a cache miss to external RAM would add
+	  hundreds of cycles of jitter. At 30 to 40 thousand events a second
+	  32 KB covers about 80 to 100 ms of a sender that cannot run.
+
+choice ZPROF_TS
+	prompt "Timestamp source"
+	default ZPROF_TS_DWT if CPU_CORTEX_M_HAS_DWT
+	default ZPROF_TS_KCYCLE
+
+config ZPROF_TS_DWT
+	bool "DWT cycle counter (one load)"
+	depends on CPU_CORTEX_M_HAS_DWT
+
+config ZPROF_TS_KCYCLE
+	bool "Kernel cycle counter (k_cycle_get_32)"
+
+endchoice
+
+config ZPROF_SYNC_MS
+	int "Interval of SYNC records, ms"
+	default 250
+
+config ZPROF_TRANSPORT_TCP
+	bool "Send over TCP"
+	default y
+	depends on NET_SOCKETS
+
+if ZPROF_TRANSPORT_TCP
+
+config ZPROF_TCP_PORT
+	int "TCP port"
+	default 5560
+
+config ZPROF_SENDER_PRIO
+	int "Sender thread priority"
+	default 14
+	help
+	  Below the application: the sender only moves the ring to the
+	  network. When it cannot keep up the ring drops, and the host shows
+	  where.
+
+config ZPROF_SENDER_STACK
+	int "Sender thread stack, bytes"
+	default 3072
+
+config ZPROF_SENDER_PERIOD_MS
+	int "Sender period, ms"
+	default 10
+	help
+	  How often the sender looks at the ring. It sends when the ring
+	  holds ZPROF_DRAIN_BYTES or its oldest data is ZPROF_DRAIN_MS old.
+
+config ZPROF_SENDER_BUSY_MS
+	int "Sender period while the ring fills fast, ms"
+	default 2
+	help
+	  Used after a look at the ring found an eighth of it or more.
+
+config ZPROF_DRAIN_BYTES
+	int "Send when the ring holds this much, bytes"
+	default 4096
+	help
+	  A send costs the sender about the same whatever its size (measured
+	  on the N6: sending every 10 ms at 115 KB/s took 1.8 % of the CPU).
+
+config ZPROF_DRAIN_MS
+	int "Send at least this often, ms"
+	default 50
+
+config ZPROF_SEND_CHUNK
+	int "Largest trace frame, bytes"
+	default 8192
+
+endif # ZPROF_TRANSPORT_TCP
+
+endif # ZPROF

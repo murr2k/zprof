@@ -5,8 +5,36 @@ firmware or bridge yet. What the dashboard shows, per role, is specified in
 [DASHBOARD_SPEC.md](DASHBOARD_SPEC.md).  
 Research verified 2026-10-18 against Zephyr `main` source and the v4.4.2 release
 (2026-08-07), plus the docs and repos listed in [References](#references).
-Zephyr is now pinned to `main` at a915b2f1 (`firmware/west.yml`).
 Working name for the firmware agent below is `zprof`; rename freely.
+
+## 0. Decisions of 2026-11-21 (they override the sections below where they disagree)
+
+The project became a SystemView work-alike: a runtime visualization, timing
+and protocol tool, Zephyr thread-aware and Cortex-M55-aware, with the data
+over the target's own Ethernet and the dashboard in the browser. It came out
+of the STM32N6570-DK demo (`~/projects/stm32n6-demo`), where SEGGER SystemView
+over a J-Link cost a 0.6 s core halt per attach, a licence notice per launch
+and a probe on the board, and its stop cleared a RIF security register
+(RISC_SECCFGR3) over the debug port, blanking the display until the demo
+locked its RIF configuration.
+
+| Topic | Decision |
+|---|---|
+| First target | The STM32N6570-DK running the stm32n6-demo (Zephyr v4.4.0): real deadlines (60 Hz frames, 2.7 ms audio refills) instead of a synthetic load. The Zynq PS stays a later target |
+| Zephyr | Pinned to **v4.4.0** (684c9e8f), the demo's, instead of `main` a915b2f1. `CONFIG_TRACING_FORMAT_HEADER` and `tracing_packet_drop_count_get()`, cited below, do not exist there |
+| Transport | **TCP on the target's Ethernet** (tcp/5560), one client. Section 8's objection (the network stack runs on the CPU being measured) is answered by measurement, not ignored: the agent's own cost is always on screen, sends are batched, a capture mode records into a RAM buffer with no traffic until upload, and an observer A/B (release build against zprof with and without a client, with the demo's `tour.py`) is a pass criterion in `config/zprof.thresholds.json`. RTT and UART remain possible later transports |
+| Trace format | **zprof's own binary records through `CONFIG_TRACING_CUSTOM`** (the module supplies `zephyr_custom_tracing.h`; the hooks it does not record are generated empty from the pinned `tracing.h`). Not CTF (32-bit ns stamps wrap every 4.3 s, no IRQ numbers, a 20-byte name per switch), not `TRACING_USER` (no semaphore, mutex, queue or sleep hooks). Closes section 8's open question and open item 4. The N6 STM path stays a possible later transport for the same records |
+| Encoding | One record format for trace and metrics, names and units once in the hello; **no CBOR/zcbor** (flash is tight on the demo: 217 KB left in its 2 MB slot) |
+| Names | Resolved on the host from the ELF: interrupt handlers, thread entries, static kernel objects, marker and print format strings (rodata pointers). Zephyr links with `--build-id=none`, so a per-build UUID symbol identifies the ELF |
+| Wire protocol | [PROTOCOL.md](PROTOCOL.md) |
+| What the observer may cost | The user's rule (2026-11-21): zprof may change the run-time profile as long as the application stays within its timing budget and meets its real-time deadlines. The gate is the application's own faults with zprof streaming (on the demo: 0 dropped frames, 0 audio underruns in a full `tour.py`), not zprof's share of the CPU, which is reported (`agent.self`, measured by zprof itself: sender time plus events x measured hook cost) but not a pass criterion. Comparing single tours of two builds does not measure that share: tour figures vary between runs by as much (upload rate, decode times); compare ranges over several tours per build before quoting a difference |
+| Release | Private until the first release, after phase P3 of the new plan (live timeline, replay, Perfetto export, metrics, markers); then public, Apache-2.0 |
+
+New phase order: P0 groundwork, P1 trace core and a command-line bridge, P2
+capture mode and the live web views, P3 metrics and application markers, R1
+first release, P4 M55 PMU and Helium counters, post-mortem and fault capture,
+P5 protocol analyzer. Phases B, A and D below are the earlier plan; their
+content is reused, their order is replaced.
 
 ## 1. Goal
 
@@ -40,7 +68,7 @@ Planned order: **B** (statistics), then **A** (trace timeline), then **D**
 | MCUmgr taskstat | Thread table over SMP | `CONFIG_MCUMGR_GRP_OS_TASKSTAT` | `runtime` field omitted unless `CONFIG_MCUMGR_GRP_OS_TASKSTAT_ONLY_SUPPORTED_STATS=n`. Request/response, heavy framing. Not a good live feed. |
 | CTF tracing | Event stream: thread switch in/out, create, ready, pend, sleep, priority, ISR enter/exit, idle, kernel objects (372 event types in current TSDL) | `CONFIG_TRACING`, `CONFIG_TRACING_CTF`, `CONFIG_TRACING_CTF_TIMESTAMP` | Header is `uint64 timestamp` (from `timing_ns_get()`, so ns) + `uint16 id`, little-endian, packed. Backends: UART, USB, POSIX file, RAM, semihost, ITM, ADSP window. Sync or async (ring buffer up to 64 KiB). |
 | Custom tracing backend | Route the CTF byte stream anywhere | `TRACING_BACKEND_DEFINE(name, api)` with `init` + `output(backend, data, len)`; selected by `CONFIG_TRACING_BACKEND_NAME` | Iterable section, so an out-of-tree module can register one. |
-| Custom tracing format | Replace CTF entirely | `CONFIG_TRACING_FORMAT_HEADER`, `CONFIG_TRACING_USER` | Exclusive with CTF: `TRACING_FORMAT_CHOICE` holds CTF and `TRACING_USER`, and the header option applies when neither is selected, so a build carries one format. User hooks receive the object pointers (`sys_trace_k_mutex_lock_enter_user(struct k_mutex *, k_timeout_t)`). A Phase A decision (section 8). |
+| Custom tracing format | Replace CTF entirely | `CONFIG_TRACING_CUSTOM` (v4.4.0; this row said `CONFIG_TRACING_FORMAT_HEADER`, which v4.4.0 does not have), `CONFIG_TRACING_USER` | One entry of `TRACING_FORMAT_CHOICE` with CTF, SystemView and `TRACING_USER`, so a build carries one format. `TRACING_CUSTOM` makes `tracing.h` include `zephyr_custom_tracing.h`, which must define every hook. User hooks receive object pointers for threads, but v4.4.0 has no user hooks for semaphores, mutexes, queues or sleep. zprof uses `TRACING_CUSTOM` (section 0). |
 | Instrumentation subsystem | Function entry/exit via `-finstrument-functions` | `CONFIG_INSTRUMENTATION`, modes `_MODE_CALLGRAPH` (trace) and `_MODE_STATISTICAL` (top-N functions, default 256, max 4096) | Merged 2025-10-05 (PR #91595), in 4.3+. GCC only. Transport is UART only (`subsys/instrumentation/transport/uart.c`) and it selects `UART_CONSOLE`. Dynamic trigger/stopper needs a `zephyr,retained-ram` DT node and reboot. Tested on ARM32 boards and `mps2_an385` QEMU. |
 
 ### 2.2 Host tooling already in the Zephyr tree
@@ -211,11 +239,10 @@ values are latched and reset at each heartbeat.
 
 CPU% is computed on the host from cycle deltas, so the firmware does no division.
 
-**Serialization.** Heartbeats are CBOR via `zcbor` (in tree, schema-tolerant,
-cheap at this rate). Trace data is not re-encoded: CTF bytes pass through.
-That is the planning default, not yet a decision: the trace format is chosen
-once per build, and Phase A picks between CTF, a zprof format and, on the N6,
-the STM (section 8).
+**Serialization.** Decided 2026-11-21 (section 0): heartbeat metrics are
+METRIC records in the same binary format as the trace, with names, types and
+units once in the hello; no CBOR. The trace format is zprof's own
+([PROTOCOL.md](PROTOCOL.md)).
 
 **Framing and transport.** One link carries all channels:
 
@@ -227,7 +254,9 @@ channel 0 = hello/control, 1 = heartbeat, 2 = CTF bytes, 3 = log text (optional)
 
 COBS resynchronizes after byte loss on a UART, and per-channel `seq` makes drops
 visible on the host. Transport is a small vtable (`init`, `write`, `can_write`)
-with UART, USB CDC ACM, RTT and native_sim pty implementations. A dedicated UART
+with UART, USB CDC ACM, RTT and native_sim pty implementations. Since
+2026-11-21 the first transport is TCP on the target's Ethernet, framed without
+COBS and CRC ([PROTOCOL.md](PROTOCOL.md) section 1); the others follow. A dedicated UART
 or a second CDC ACM instance is preferred so `printk` never interleaves with
 frames; channel 3 exists for boards that have only one serial link.
 
@@ -447,6 +476,11 @@ Arithmetic from the current TSDL with `CONFIG_TRACING_CTF_TIMESTAMP=y`
 | Target Ethernet (Zynq GEM, `eth_xlnx_gem`) | 10 M to 100 M | fits | far beyond need |
 | TPIU trace port to J-Trace PRO | port width x trace clock, shared with PTM | n/a | no host API found for ITM data (section 2.6) |
 
+Superseded 2026-11-21 (section 0): the first transport is TCP on the target's
+Ethernet, and the objection below is answered by measurement (an observer A/B
+pass criterion), the agent's cost on screen, batching and a capture mode. The
+original reasoning, kept for the record:
+
 RTT is the planning default with a probe attached: about 2x USB FS, and the
 cheapest on the target. Target-side Ethernet has the most headroom but runs a
 network stack, interrupts, DMA and cache maintenance on the CPU being
@@ -471,9 +505,9 @@ delta timestamps) could cut a switch from 68 to under 16 bytes, at the cost of
 compatibility with `trace_viewer.py`, Perfetto conversion and babeltrace2. Only
 do that with measurements in hand.
 
-**Phase A format decision.** The format is exclusive at a915b2f1: CTF,
-`TRACING_USER` and an out-of-tree `TRACING_FORMAT_HEADER` cannot be combined
-in one build. The options:
+**Phase A format decision.** Decided 2026-11-21: the zprof format through
+`CONFIG_TRACING_CUSTOM` (section 0; the option is called that in v4.4.0, not
+`TRACING_FORMAT_HEADER`). The options as they were weighed:
 
 | Option | Gains | Costs |
 |---|---|---|
@@ -488,15 +522,15 @@ what the backend is.
 
 Risks:
 
-- **Zephyr drift.** CTF IDs and tracing internals move between commits on
-  `main`. Zephyr is pinned by SHA in `firmware/west.yml` (a915b2f1); bump it
-  deliberately, re-check DASHBOARD_SPEC.md section 3, and always decode from
-  the TSDL of the running build.
-- **Async tracing drops.** Behavior when the `TRACING_ASYNC` ring overflows
-  (default 2 KiB, max 64 KiB) has not been checked. If it drops before our
-  backend sees the bytes, channel `seq` will not reveal it. Zephyr `main` now
-  has `tracing_packet_drop_count_get()` (cumulative, present at the pinned
-  SHA); report it in every heartbeat.
+- **Zephyr drift.** Tracing hooks move between releases. Zephyr is pinned by
+  SHA in `firmware/west.yml` (v4.4.0 since 2026-11-21); bump it deliberately
+  and re-check DASHBOARD_SPEC.md section 3. Hooks zprof does not record are
+  generated from the pinned `tracing.h` at build time, so a new hook is empty
+  rather than a build break.
+- **Ring drops.** zprof does not use Zephyr's tracing core or its async ring
+  (and v4.4.0 has no `tracing_packet_drop_count_get()`). Its own ring drops
+  when full and says so: an OVERFLOW record with the count, the time and the
+  running thread ([PROTOCOL.md](PROTOCOL.md)).
 - **Observer effect.** Tracing and heartbeat cost are reported, and every A/B
   comparison is made with the same build.
 - **ISR accounting.** Runtime stats fold ISR time into the interrupted thread;
@@ -536,7 +570,8 @@ Decided (2026-10-18):
 
 - **Targets:** a Zynq PS, and the STM32N6570-DK (Cortex-M55) for development
   practice. DASHBOARD_SPEC.md section 11 compares what each supports.
-- **Zephyr:** `main`, pinned by SHA in `firmware/west.yml`.
+- **Zephyr:** `main`, pinned by SHA in `firmware/west.yml`. Changed
+  2026-11-21: v4.4.0 (section 0).
 - **Pass criteria:** in the thresholds file `config/zprof.thresholds.json`
   (DASHBOARD_SPEC.md section 7.2).
 - **Sferic dependency (de facto):** local source path, because the mockup's new
@@ -549,7 +584,8 @@ Still open:
 2. Which J-Trace PRO model and hardware version (streaming trace on Zynq needs
    HW V3.0+)?
 3. Firmware agent name (`zprof` is a placeholder).
-4. Phase A trace format: CTF, a zprof format, or the N6 STM (section 8).
+4. ~~Phase A trace format: CTF, a zprof format, or the N6 STM (section 8).~~
+   Decided 2026-11-21: the zprof format (section 0).
 
 ## References
 

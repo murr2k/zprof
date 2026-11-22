@@ -1,0 +1,4 @@
+name: zprof
+build:
+  cmake: .
+  kconfig: Kconfig

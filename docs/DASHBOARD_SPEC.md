@@ -148,6 +148,32 @@ Role columns: **●** primary (on that role's default view), **○** available
 (drill-down, secondary view), blank (not shown by default). Class codes are
 from section 2.2.
 
+**Re-checked at Zephyr v4.4.0 (684c9e8f), 2026-11-21**, when the pin moved
+from `main` a915b2f1 (PLANS.md section 0). About 118 of 133 citations below
+hold unchanged. These do not, and the corrections override the rows that
+cite them:
+
+| Line(s) | Cited | At v4.4.0 |
+|---|---|---|
+| 178, 897 | `tracing_packet_drop_count_get()` | Absent; the core's drop counter is static. zprof does not use the tracing core: its ring reports drops itself (OVERFLOW records) |
+| 185, 869-872 | Two `cpu_load` backends (idle hook; runtime stats on SMP) | One: the idle-hook implementation (`!SMP`; Cortex-M, RISC-V, ARM64 only, so not 32-bit Zynq). ISR time counts as busy (idle exit runs before interrupts are re-enabled). A format that overrides `sys_trace_idle*()` must call `cpu_load_on_enter/exit_idle()` itself (zprof does) |
+| 185 | `cpu_load_cb_reg(cb, threshold)` | Present, but it fires only from the periodic log timer (`CPU_LOAD_LOG_PERIODICALLY`), which also resets the measurement window each period |
+| 219, 861 | `sys_heap_get_largest_free_block()` | Absent: fragmentation needs an agent chunk walk, or waits |
+| 224 | Stock CTF `heap_alloc_exit` / `heap_free` | Stock CTF has no `k_heap` events at all; the `--wrap` path is the only one |
+| 239 | CTF `fifo_*` and `heap_*` object events | Absent (no queue, lifo or stack events either). Present: `semaphore_*`, `mutex_*`, `msgq_*` with `_blocking`, `timer_expiry_*`, `work_*`, plus `mem_slab_*`, `condvar_*`, `mbox_*`, `event_*`, `poll_*` |
+| 241 | Inheritance boosts as `thread_priority_set` | `adjust_owner_prio()` traces `sched_priority_set` (CTF `thread_sched_priority_set`); `thread_priority_set` is not emitted for boosts |
+| 247-248 | Pipe events from CTF | Stock CTF has no pipe events; a custom hook or an application wrapper |
+| 260, 895 | Weak `zassert_post_action(file, line)` | Weak `assert_post_action(file, line)` (`lib/os/assert.c`), not noreturn; the default calls `k_panic()` |
+| 265 | CTF `sys_init_enter/exit` | Hooks exist (`kernel/init.c`), CTF leaves them empty; a format implements `sys_trace_sys_init_*` itself |
+| 322 | `perf` on Cortex-M and ARM64 | Backends for RISC-V and x86 only; not Cortex-M |
+| 323 | ARM64 PMUv3 API | Absent; no PMU API for either Arm profile. On the M55, zprof drives the PMU through CMSIS 6 (`armv8m_pmu.h`) itself |
+| 331 | `-fstack-usage` (unverified) | `CONFIG_STACK_USAGE` |
+| 896 | `TRACING_OBJECT_TRACKING` selects `OBJ_CORE` | Selects nothing; keeps the `_track_list_*` lists (`tracking.h`) |
+
+Rows that say "at a915b2f1" or "on `main`" (224, 239, 247, 257, 289, 894)
+otherwise still hold at v4.4.0. (Line numbers are those before this note was
+added; add 26.)
+
 ### 3.1 Identity and session
 
 | ID | Parameter | Unit | Source | Class | Dev | QA |
