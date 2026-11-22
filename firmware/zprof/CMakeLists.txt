@@ -20,7 +20,9 @@ if(CONFIG_ZPROF)
   zephyr_include_directories(include ${ZPROF_GEN_DIR})
 
   zephyr_library_named(zprof)
-  zephyr_library_sources(src/hooks.c)
+  zephyr_library_sources(src/hooks.c src/metrics.c)
+  # ZPROF_METRIC_DEFINE's iterable section (RAM: the values change)
+  zephyr_linker_sources(DATA_SECTIONS zprof_metrics.ld)
   zephyr_library_sources_ifdef(CONFIG_ZPROF_TRANSPORT_TCP src/transport_tcp.c)
 
   # A new build id on every build (scripts/gen_build_id.py).

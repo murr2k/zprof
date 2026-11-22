@@ -16,8 +16,9 @@ import { reliabilityCompare } from './views/reliabilityCompare'
 import { targetSim, LINK_BUDGET_BPS, type Heartbeat } from './sim/target'
 import { liveTarget } from './views/liveTarget'
 import { liveSched } from './views/liveSched'
+import { liveTiming } from './views/liveTiming'
 import { liveLinkIfOpen } from './live/link'
-import { segmented } from './dom'
+import { button, segmented } from './dom'
 import { bytesRate } from './format'
 import { ICONS } from './icons'
 import { setNavigator } from './nav'
@@ -40,6 +41,7 @@ const GROUPS: { role: string; views: Entry[] }[] = [
   { role: 'Target', views: [
     { id: 'target', name: 'Live target', icon: 'live', view: liveTarget, live: true },
     { id: 'sched', name: 'Schedulability', icon: 'timing', view: liveSched, live: true },
+    { id: 'ltiming', name: 'Timing', icon: 'trace', view: liveTiming, live: true },
   ] },
   { role: 'Engineering', views: [
     { id: 'live', name: 'Live', icon: 'live', view: engineeringLive },
@@ -206,11 +208,47 @@ function renderPresets() {
   if (!st!.preset && st!.classes !== null && st!.classes !== undefined) {
     presetsEl.append(Object.assign(document.createElement('span'), { textContent: `classes 0x${st!.classes.toString(16)}` }))
   }
+  presetsEl.append(capEl)
+}
+
+// Capture-then-upload: the board records into its own buffer with nothing on the
+// network, then uploads it. The button and the Stop are rebuilt only when the state
+// changes; the progress text is updated in place.
+const capEl = Object.assign(document.createElement('span'), { className: 'rec-capture' })
+let capSig = ''
+let capText: HTMLSpanElement | null = null
+const mb = (b: number) => (b / 1048576).toFixed(1)
+function renderCapture() {
+  const st = current.live ? liveLinkIfOpen()?.status : null
+  const c = st?.control ? st.capture : null
+  const ok = !!(c && c.capacity > 0 && c.state !== 4)
+  const busy = ok && (c!.state === 1 || c!.state === 2)
+  const sig = ok ? (busy ? String(c!.state) : 'idle') : ''
+  if (sig !== capSig) {
+    capSig = sig
+    capEl.replaceChildren()
+    capText = null
+    if (ok && !busy) {
+      capEl.append(button('Capture', () => liveLinkIfOpen()?.capture(0), 'btn tiny',
+        `Record into the board's own ${mb(c!.capacity)} MB buffer with nothing sent meanwhile, ` +
+        'then upload it: no record lost to the sender or the network (until full or Stop)'))
+    } else if (busy) {
+      capText = document.createElement('span')
+      capEl.append(capText)
+      if (c!.state === 1) capEl.append(button('Stop', () => liveLinkIfOpen()?.captureStop(), 'btn tiny'))
+    }
+  }
+  if (capText && c) {
+    capText.textContent = c.state === 1
+      ? `capturing ${mb(c.bytes)} of ${mb(c.capacity)} MB, ${(c.ms / 1000).toFixed(1)} s`
+      : `uploading ${mb(c.bytes)} MB`
+  }
 }
 
 function renderHeader() {
   const rl = document.getElementById('railLink')
   renderPresets()
+  renderCapture()
   if (current.live) {
     modeEl.textContent = 'live target'
     const l = liveLinkIfOpen()

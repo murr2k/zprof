@@ -7,6 +7,8 @@
   python -m zprof_bridge serve [--host H | --replay rec.zpr [--speed 1] [--loop]] [--record rec.zpr] [--ws-port 8786]
                                [--deadlines d.json] [--preset sched|timing|objects]
   python -m zprof_bridge sched rec.zpr [--elf ...] [--irq-header ...] [--deadlines d.json]
+  python -m zprof_bridge check rec.zpr        (replay equals live: the same answers whatever the pieces)
+  python -m zprof_bridge capture --buffer --secs 10 -o rec.zpr   (capture-then-upload: nothing sent until the end)
   python -m zprof_bridge discover
 
 capture records a session to a .zpr file (the stream as received, replayable)
@@ -23,7 +25,8 @@ import sys
 import time
 from pathlib import Path
 
-from . import link, record
+from . import link, presets, record
+from . import proto as P
 from . import thresholds as TH
 from .analyze import Analysis, irq_names_from_header, report
 from .elf import Elf
@@ -63,8 +66,17 @@ def cmd_capture(a: argparse.Namespace) -> None:
     d = Decoder()
     w = record.Writer(a.out, meta)
     s = link.connect(host, port)
-    print(f"capturing from {host}:{port} for {a.secs:g} s -> {a.out}")
     t_end = time.time() + a.secs
+    ends: list[tuple] = []          # the target's capture status at the end (DONE or UNAVAILABLE)
+    if a.buffer:
+        # capture-then-upload: the target records into its buffer, sending only a status,
+        # then uploads it; the recording stops half a second after the upload is done
+        d.on_capture = lambda st: ends.append(st) if st[0] in (P.CAP_DONE, P.CAP_UNAVAILABLE) else None
+        s.sendall(presets.capture_frame(int(a.secs * 1000)))
+        t_end = time.time() + a.secs + 120          # the upload's own time on top
+        print(f"capturing into {host}'s buffer for {a.secs:g} s, then its upload -> {a.out}")
+    else:
+        print(f"capturing from {host}:{port} for {a.secs:g} s -> {a.out}")
     try:
         while time.time() < t_end:
             try:
@@ -75,10 +87,17 @@ def cmd_capture(a: argparse.Namespace) -> None:
                 print("the target closed the session")
                 break
             w.chunk(data)
-            if a.raw:
+            if a.raw and not a.buffer:
                 d.bytes_in += len(data)
             else:
                 d.feed(data)
+            if ends:
+                st = ends.pop()
+                if st[0] == P.CAP_UNAVAILABLE:
+                    print("the target has no capture buffer (CONFIG_ZPROF_CAPTURE_KB, zprof_port_alloc)")
+                    break
+                print(f"uploaded {st[1] / 1e6:.2f} MB")
+                t_end = time.time() + 0.5
     except KeyboardInterrupt:
         pass
     finally:
@@ -117,6 +136,17 @@ def cmd_export(a: argparse.Namespace) -> None:
     n = perfetto.export(_analysis(d, a), out)
     print(f"{out}: {n['slices']:,} slices, {n['threads']} threads, {n['interrupts']} interrupts, "
           f"{n['drops']} drop markers; open it in https://ui.perfetto.dev (the file stays in the browser)")
+
+
+def cmd_check(a: argparse.Namespace) -> None:
+    from .replay import check
+
+    head, _ = record.read(a.recording)
+    elf_path = a.elf or head.get("elf")
+    elf = Elf(elf_path) if elf_path and Path(elf_path).exists() else None
+    ok, lines = check(a.recording, elf)
+    print("\n".join(lines))
+    sys.exit(0 if ok else 1)
 
 
 def cmd_sched(a: argparse.Namespace) -> None:
@@ -198,7 +228,13 @@ def main() -> None:
     sp.add_argument("--elf")
     sp.add_argument("--irq-header")
     sp.add_argument("--raw", action="store_true", help="record only, decode nothing (long sessions)")
+    sp.add_argument("--buffer", action="store_true",
+                    help="capture-then-upload: the target records into its buffer and sends nothing until the end")
     sp.set_defaults(fn=cmd_capture)
+    sp = sub.add_parser("check", help="replay equals live: a recording decoded as it arrived and in other pieces")
+    sp.add_argument("recording")
+    sp.add_argument("--elf")
+    sp.set_defaults(fn=cmd_check)
     sp = sub.add_parser("summary")
     sp.add_argument("recording")
     sp.add_argument("--elf")

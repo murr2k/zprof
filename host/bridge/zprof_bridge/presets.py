@@ -39,7 +39,19 @@ def preset_of(classes: int) -> str | None:
     return next((p["id"] for p in PRESETS if p["classes"] == classes), None)
 
 
+def _frame(tlv: bytes) -> bytes:
+    return struct.pack("<BBHI", P.CH_CONTROL, 0, 0, len(tlv)) + tlv
+
+
 def classes_frame(classes: int) -> bytes:
     """A control frame asking the target to record these classes (it answers with HT_CLASSES)."""
-    tlv = struct.pack("<HHI", P.CT_CLASSES, 4, classes & ALL)
-    return struct.pack("<BBHI", P.CH_CONTROL, 0, 0, len(tlv)) + tlv
+    return _frame(struct.pack("<HHI", P.CT_CLASSES, 4, classes & ALL))
+
+
+def capture_frame(ms: int) -> bytes:
+    """Capture-then-upload for `ms` (0: until stopped or full); answered with HT_CAPTURE."""
+    return _frame(struct.pack("<HHI", P.CT_CAPTURE, 4, ms & 0xFFFFFFFF))
+
+
+def capture_stop_frame() -> bytes:
+    return _frame(struct.pack("<HH", P.CT_CAPTURE_STOP, 0))

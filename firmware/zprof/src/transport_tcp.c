@@ -28,6 +28,7 @@
 #include <cmsis_core.h>
 
 #include <zprof/proto.h>
+#include <zprof/zprof.h>
 
 #include "zprof_internal.h"
 
@@ -115,6 +116,14 @@ struct table_ctx {
 	bool send;
 };
 
+/* the hello's metric dictionary and capture status (defined with the capture code) */
+struct dict_ctx {
+	int s;
+	int err;
+};
+static void dict_entry(uint16_t index, const struct zprof_metric *m, void *user);
+static int cap_status(int s);
+
 static void thread_entry(const struct k_thread *t, void *user)
 {
 	struct table_ctx *c = user;
@@ -199,6 +208,12 @@ static int hello(int s)
 	if (err) {
 		return -EIO;
 	}
+	struct dict_ctx dc = {.s = s};
+
+	zprof_metric_dict(dict_entry, &dc);
+	if (dc.err || cap_status(s) < 0) {
+		return -EIO;
+	}
 	return thread_table(s, true, &threads_sig);
 }
 
@@ -257,6 +272,135 @@ static int drain(int s)
 }
 
 /*
+ * Capture-then-upload: the hooks write straight into a buffer from the port
+ * (zprof_port_alloc, asked once) instead of the ring (zprof_capture_begin), and
+ * the sender sends only a status every 500 ms. Nothing has to keep up with the
+ * events meanwhile: a sender held off by the network stack (a screenshot's
+ * 1.5 MB send makes about 2 MB/s of events) loses nothing, where moving the
+ * ring into the buffer lost records whenever the ring filled first. At the end
+ * (the time asked for, the host's stop, or the buffer full) the hooks go back
+ * to the ring and the buffer goes as ordinary trace frames, so the host decodes
+ * it as the stream it would have been. Records the ring could not hold during
+ * the upload are an OVERFLOW, as in streaming.
+ */
+static struct {
+	uint8_t state;      /* ZPROF_CAP_* */
+	bool tried, stop;
+	uint32_t *buf;
+	uint32_t cap, len;  /* words; len: written, once the capture has ended */
+	uint32_t t0, ms;    /* uptime at the start; length asked for (0: until stopped or full) */
+	uint32_t lost0;     /* the session's losses when it began */
+} cap;
+
+/* Words in the capture so far (the hooks' count while recording). */
+static uint32_t cap_words(void)
+{
+	return cap.state == ZPROF_CAP_RECORDING ? zprof_ring.cap_len : cap.len;
+}
+
+#define CAP_BYTES ((uint32_t)CONFIG_ZPROF_CAPTURE_KB * 1024u)
+
+static int cap_status(int s)
+{
+	uint8_t v[16];
+
+	sys_put_le32(cap.state, &v[0]);
+	sys_put_le32(cap_words() * 4u, &v[4]);
+	sys_put_le32(cap.buf != NULL ? cap.cap * 4u : (cap.tried ? 0u : CAP_BYTES), &v[8]);
+	sys_put_le32(cap.state == ZPROF_CAP_RECORDING ? k_uptime_get_32() - cap.t0 : 0u, &v[12]);
+	return (tlv(s, ZPROF_HT_CAPTURE, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+}
+
+static void cap_start(uint32_t ms)
+{
+	if (!cap.tried && CAP_BYTES > 0u) {
+		cap.tried = true;
+		cap.buf = zprof_port_alloc(CAP_BYTES);
+		cap.cap = cap.buf != NULL ? CAP_BYTES / 4u : 0u;
+	}
+	if (cap.buf == NULL) {
+		cap.state = ZPROF_CAP_UNAVAILABLE;
+		return;
+	}
+	cap.len = 0u;
+	cap.ms = ms;
+	cap.stop = false;
+	cap.t0 = k_uptime_get_32();
+	cap.lost0 = zprof_ring.dropped_all;
+	cap.state = ZPROF_CAP_RECORDING;
+	zprof_capture_begin(cap.buf, cap.cap);
+	LOG_INF("capture: recording %u KB for %u ms", cap.cap / 256u, ms);
+}
+
+/* Full: a record was refused since it began, or nearly no room is left. */
+static bool cap_full(void)
+{
+	return zprof_ring.dropped_all != cap.lost0 || zprof_ring.cap_len + 64u > cap.cap;
+}
+
+static int cap_upload(int s)
+{
+	uint32_t t = 0;
+
+	while (t < cap.len) {
+		uint32_t end = t;
+
+		while (end < cap.len) {
+			uint32_t n = ZPROF_REC_WORDS(ZPROF_REC_NW(cap.buf[end + 1u]));
+
+			if ((end - t + n) * 4u > CONFIG_ZPROF_SEND_CHUNK) {
+				break;
+			}
+			end += n;
+		}
+		if (send_frame(s, ZPROF_CH_TRACE, &cap.buf[t], (end - t) * 4u, NULL, 0) < 0) {
+			return -EIO;
+		}
+		t = end;
+	}
+	return 0;
+}
+
+/* Stop recording, send the buffer, report it done; then streaming carries on. */
+static int cap_finish(int s)
+{
+	cap.len = zprof_capture_end();   /* the hooks write the ring again */
+	uint32_t bytes = cap.len * 4u;
+
+	cap.state = ZPROF_CAP_UPLOADING;
+	if (cap_status(s) < 0 || cap_upload(s) < 0) {
+		return -EIO;
+	}
+	cap.state = ZPROF_CAP_DONE;
+	if (cap_status(s) < 0) {
+		return -EIO;
+	}
+	LOG_INF("capture: %u KB uploaded", bytes / 1024u);
+	cap.state = ZPROF_CAP_OFF;
+	cap.len = 0u;
+	return 0;
+}
+
+/* The metric dictionary in the hello: u16 index, u8 kind, u8 0, name NUL unit. */
+static void dict_entry(uint16_t index, const struct zprof_metric *m, void *user)
+{
+	struct dict_ctx *c = user;
+	uint8_t v[4 + 96];
+	size_t nl = strnlen(m->name, 63), ul = strnlen(m->unit, 31);
+
+	if (c->err) {
+		return;
+	}
+	sys_put_le16(index, &v[0]);
+	v[2] = m->kind;
+	v[3] = 0;
+	memcpy(&v[4], m->name, nl);
+	v[4 + nl] = 0;
+	memcpy(&v[5 + nl], m->unit, ul);
+	c->err = tlv(c->s, ZPROF_HT_METRIC, v, (uint16_t)(5u + nl + ul));
+}
+
+/*
  * Control from the host: frames on the control channel holding TLV commands.
  * Read without waiting, a few bytes at a time, between sends; a frame too long
  * for the buffer is skipped. Answers go out as TLV in a control frame.
@@ -283,6 +427,15 @@ static int control(int s, const uint8_t *p, size_t n)
 				return -EIO;
 			}
 			LOG_INF("recording object classes 0x%02x", zprof_classes);
+		} else if (tag == ZPROF_CT_CAPTURE && len == 4u) {
+			if (cap.state != ZPROF_CAP_RECORDING) {
+				cap_start(sys_get_le32(p + 4));
+			}
+			if (cap_status(s) < 0) {
+				return -EIO;
+			}
+		} else if (tag == ZPROF_CT_CAPTURE_STOP) {
+			cap.stop = true;
 		}
 		p += 4u + len;
 		n -= 4u + len;
@@ -344,6 +497,10 @@ static void session(int s)
 	hn = 0;
 	cn = 0;
 	cskip = 0;
+	if (cap.state != ZPROF_CAP_UNAVAILABLE) {
+		cap.state = ZPROF_CAP_OFF;   /* a capture in progress went with the last client */
+	}
+	cap.len = 0u;
 	/* every session starts recording every class: a client that says nothing gets
 	 * them all, whatever the last one chose (the bridge sends its choice again) */
 	zprof_classes = BIT_MASK(ZPROF_OBJ_LAST - ZPROF_OBJ_FIRST + 1);
@@ -365,7 +522,9 @@ static void session(int s)
 	}
 	zprof_sync();
 	thread_stats();
+	zprof_heartbeat_reset();
 	uint32_t last_drain = k_uptime_get_32();
+	uint32_t t_hb = last_drain, t_cap = last_drain, n_hb = 0;
 
 	t_sync = t_stats = last_drain;
 
@@ -383,15 +542,40 @@ static void session(int s)
 		uint32_t now = k_uptime_get_32();
 		uint32_t held = (r->head - r->tail) * 4u;
 
-		/* a send costs about the same whatever its size: send when there is
-		 * enough to be worth one, or the data is getting old */
-		if (held >= CONFIG_ZPROF_DRAIN_BYTES || now - last_drain >= CONFIG_ZPROF_DRAIN_MS) {
+		if (held / 4u > zprof_ring_peak) {
+			zprof_ring_peak = held / 4u;
+		}
+		if (cap.state == ZPROF_CAP_RECORDING) {
+			/* the hooks write the capture buffer; what the ring held before goes
+			 * out first (older than the capture), then nothing but a status */
+			if (held > 0u && drain(s) < 0) {
+				break;
+			}
+			if (cap_full() || cap.stop || (cap.ms != 0u && now - cap.t0 >= cap.ms)) {
+				if (cap_finish(s) < 0) {
+					break;
+				}
+				last_drain = now;
+			} else if (now - t_cap >= 500u) {
+				if (cap_status(s) < 0) {
+					break;
+				}
+				t_cap = now;
+			}
+		} else if (held >= CONFIG_ZPROF_DRAIN_BYTES || now - last_drain >= CONFIG_ZPROF_DRAIN_MS) {
+			/* a send costs about the same whatever its size: send when there is
+			 * enough to be worth one, or the data is getting old */
 			if (drain(s) < 0) {
 				break;
 			}
 			last_drain = now;
 		}
 		busy = held >= CONFIG_ZPROF_RING_SIZE / 8u;
+
+		if (now - t_hb >= CONFIG_ZPROF_HEARTBEAT_MS) {
+			zprof_heartbeat(n_hb++);
+			t_hb = now;
+		}
 
 		if (now - t_sync >= CONFIG_ZPROF_SYNC_MS) {
 			zprof_sync();

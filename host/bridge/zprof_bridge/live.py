@@ -31,7 +31,8 @@ from . import proto as P
 from .analyze import CALL_NAMES, CLASS_NAMES, EXC_NAMES, ISR_CTX, Tracker, short_name
 from .elf import Elf
 from . import thresholds as TH
-from .presets import ALL, BY_ID, PRESETS, classes_frame, preset_of
+from .presets import ALL, BY_ID, PRESETS, capture_frame, capture_stop_frame, classes_frame, preset_of
+from .timing import TimingTracker
 from .sched import JobTracker, analyze, build_model, job_marks, releases
 from .stream import Decoder
 
@@ -62,6 +63,7 @@ class LiveSession:
         self.th = thresholds if thresholds is not None else TH.load()
         self.d = Decoder()
         self.d.on_session = self._session
+        self.d.on_capture = self._capture
         self.epoch = 0             # a new one after a reboot of the target: the page starts over
         self.link_state = "connecting"
         self.new_status: list[dict] = []
@@ -75,9 +77,11 @@ class LiveSession:
     def _reset_view(self) -> None:
         self.tr: Tracker | None = None
         self.jt: JobTracker | None = None          # jobs and arrivals for the schedulability view
+        self.tt: TimingTracker | None = None       # metrics, plots, prints, marked spans (Timing view)
         self.sched_tasks: list | None = None       # the model of the last analysis (what-ifs start from it)
         self.sched_meta: dict = {}
         self.sched_last: str | None = None
+        self._timing_at = 0.0
         self.keys: list[tuple[str, int]] = []        # lane -> ('i', irq) | ('t', thread)
         self.lane: dict[tuple[str, int], int] = {}
         self.topo_dirty = False
@@ -135,7 +139,16 @@ class LiveSession:
             self.set_classes(j["classes"])
         elif kind == "sched_reset" and self.tr is not None:
             self._new_jobs()
+        elif kind == "capture" and self.source == "live" and self.to_target:
+            ms = int(j.get("ms") or 0)
+            self.to_target(capture_frame(max(0, ms)))
+        elif kind == "capture_stop" and self.source == "live" and self.to_target:
+            self.to_target(capture_stop_frame())
         return []
+
+    def _capture(self, st: tuple) -> None:
+        """The target's capture status (recording, uploading, done)."""
+        self.new_status.append(self._status())
 
     # ------------------------------------------------------------ schedulability
     def _new_jobs(self) -> None:
@@ -174,7 +187,9 @@ class LiveSession:
                 # recording control: only a live target can be told
                 "control": self.source == "live", "presets": PRESETS,
                 "classes": rec, "preset": preset_of(rec) if rec is not None else None,
-                "want": self.want_classes}
+                "want": self.want_classes,
+                # capture-then-upload: state, bytes held, capacity (0: none), ms recorded
+                "capture": dict(zip(("state", "bytes", "capacity", "ms"), h.capture)) if self.d.ready else None}
 
     # ------------------------------------------------------------ input
     def feed(self, data: bytes) -> None:
@@ -192,6 +207,8 @@ class LiveSession:
             self.tr = Tracker(h, keep=False, on_run=self._run, on_isr=self._isr, on_ready=self._ready,
                               on_block=self._block)
             self._new_jobs()
+            self.tt = TimingTracker(h, self.d.threads, lambda a: self.elf.string(a) if self.elf else None,
+                                    lambda p: self.name(("t", p)))
             self.topo_dirty = True
         if self.d.hello.classes != self._classes_seen:   # a hello, or the target's answer to a change
             self._classes_seen = self.d.hello.classes
@@ -204,18 +221,37 @@ class LiveSession:
                 self._win_t0 = recs[0].t
                 self._prev = self._snapshot()
                 self._prev["t"] = recs[0].t
-            self.tr.feed(recs)
-            self.jt.feed(recs)
-            for r in recs:
-                if r.id == P.EV_OVERFLOW:  # a marker on the lane of the thread that was running
-                    k = ("t", r.w[3])
-                    self._key(k)
-                    self._add(r.t, r.t, k, DROP)
+            # Statistics windows close at whole seconds of the target's clock, wherever
+            # the bytes happened to be split (a live socket read, a recording's chunk):
+            # replay equals live.
+            hz = self.d.hello.ts_hz or 1
+            i, n = 0, len(recs)
+            while i < n:
+                end = self._win_t0 + hz
+                j = i
+                while j < n and recs[j].t < end:
+                    j += 1
+                if j > i:
+                    self._feed_part(recs[i:j])
+                if j < n:
+                    s = self._stats(end)
+                    self.stats_hist.append(s)
+                    self.new_stats.append(s)
+                    if recs[j].t >= end + hz:
+                        # nothing for a second or more (a capture recording): no empty windows
+                        self._win_t0 = self._prev["t"] = recs[j].t
+                i = j
             recs.clear()  # live: nothing kept beyond the tracker's totals and the retained timeline
-            if self.tr.t1 - self._win_t0 >= self.d.hello.ts_hz:
-                s = self._stats()
-                self.stats_hist.append(s)
-                self.new_stats.append(s)
+
+    def _feed_part(self, recs) -> None:
+        self.tr.feed(recs)
+        self.jt.feed(recs)
+        self.tt.feed(recs)
+        for r in recs:
+            if r.id == P.EV_OVERFLOW:  # a marker on the lane of the thread that was running
+                k = ("t", r.w[3])
+                self._key(k)
+                self._add(r.t, r.t, k, DROP)
 
     def _key(self, k: tuple[str, int]) -> int:
         i = self.lane.get(k)
@@ -362,6 +398,13 @@ class LiveSession:
             self.pending = []
         out.extend(json.dumps(s) for s in self.new_stats)
         self.new_stats.clear()
+        # the Timing view's data, once a second
+        now = time.monotonic()
+        if self.tt is not None and now - self._timing_at >= 1.0:
+            self._timing_at = now
+            m = self.tt.message()
+            if m:
+                out.append(json.dumps(m))
         return out
 
     def snapshot(self) -> list[str | bytes]:
@@ -370,7 +413,8 @@ class LiveSession:
         if self.tr is None or not self._first_hello_sent:
             return [status, json.dumps({"type": "waiting", "target": self.target, "source": self.source})]
         return [status, self.hello(), self._encode(self.retained), *map(json.dumps, self.stats_hist),
-                *([self.sched_last] if self.sched_last else [])]
+                *([self.sched_last] if self.sched_last else []),
+                *([json.dumps(self.tt.message(full=True))] if self.tt is not None else [])]
 
     # ------------------------------------------------------------ statistics
     def _snapshot(self) -> dict:
@@ -384,9 +428,11 @@ class LiveSession:
             "obj": {k: (sum(u.calls.values()), u.blocks, u.without) for k, u in tr.objects.items()},
         }
 
-    def _stats(self) -> dict:
+    def _stats(self, t_end: int) -> dict:
+        """The window from the last one's end to t_end (target time)."""
         tr, h, prev = self.tr, self.d.hello, self._prev
         now = self._snapshot()
+        now["t"] = t_end
         span = max(1, now["t"] - prev["t"])
         secs = span / (h.ts_hz or 1)
         us = 1e6 / (h.ts_hz or 1)

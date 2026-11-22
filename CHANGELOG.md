@@ -150,6 +150,44 @@ views are still the mockup on synthetic data.
   `setSortable`), HTML tables with headings through `sortableTable` in
   `dom.ts` (Watch & Tune's probe and audit tables). `snap.mjs --click "x,y"`
   clicks page points before a second screenshot.
+- Capture-then-upload: the header's *Capture* button (or `python -m
+  zprof_bridge capture --buffer --secs N`) has the target record into its own
+  buffer (`CONFIG_ZPROF_CAPTURE_KB` from the port's `zprof_port_alloc()`; the
+  demo's is 4 MB of PSRAM) with nothing but a status on the network, then
+  upload it as ordinary trace frames; progress and Stop in the header. The
+  hooks write the buffer directly, so no record is lost inside the window
+  whatever holds the sender off: during the attract lap with two 1.5 MB
+  screenshots sent meanwhile, 8 s and 4 MB with none lost, where moving the
+  ring into the buffer lost about 7,900 at the screenshots. What the ring
+  cannot hold during the upload is an OVERFLOW after the capture.
+- Replay equals live: `python -m zprof_bridge check rec.zpr` decodes a
+  recording as it arrived and in other pieces and compares totals, statistics
+  windows, jobs and Timing series, and the batch analysis's per-thread and
+  per-interrupt totals (481,881 records of Home: the same). The live
+  statistics windows now close at whole seconds of the target's clock, not
+  where a socket read happened to end.
+- P3, metrics and application data: a heartbeat every 100 ms latches every
+  metric (`ZPROF_METRIC_DEFINE` with `ZPROF_ADD`, `ZPROF_SET`,
+  `ZPROF_TIMER_START/STOP`; built-ins `cpu.load`, `zprof.dropped`,
+  `zprof.ring_peak`; the port's `zprof_port_heartbeat()` sets the
+  application's gauges) and every 10th adds each thread's stack watermark;
+  `ZPROF_PLOT(name, value)` and `ZPROF_PRINT(fmt, ...)` (integers, formatted
+  on the host). The metric dictionary is in the hello.
+- The live Timing view (`#ltiming`): marked jobs (each job's duration) and
+  their spread, plots, the heartbeat's metrics (click one to chart it), stack
+  watermarks and prints; plots draw points, so a gap (no margin without
+  consecutive frames) is not bridged by a line.
+- The demo (branch `zprof-integration`): `prof.c` gives zprof its capture
+  buffer and puts `gfx_stats()` (frames, dropped, refresh period, least
+  margin) and the DAC's block and underrun counts into every heartbeat;
+  `gfx.c` plots each frame's margin.
+- `integrations/stm32n6-demo/p3check.py`, the P3 exit check: the trace against
+  those counters as the heartbeat reads them, beat by beat. On Home and over
+  60 s of the attract lap: frame marks equal frames counted, the median
+  present interval equals the refresh period (16,673 us), the drops the trace
+  implies equal `gfx.dropped`, `margin_min_us` equals the least plotted margin
+  at all 560 heartbeats, and the audio refill wakeups equal the DAC's blocks
+  (22,300 of 22,300; 47.73 kHz).
 - `python -m zprof_bridge export`: Trace Event JSON for ui.perfetto.dev.
 - `web/scripts/snap.mjs`: headless screenshots of views with every page
   error and WebGL warning listed (Sferic's harness).

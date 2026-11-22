@@ -182,6 +182,8 @@ select.sel { border: 1px solid var(--line); background: var(--chip); border-radi
 .loopbox table { margin-top: 6px; }
 .loopbox td.mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: normal; word-break: break-all; }
 .rec-presets { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
+.rec-capture { display: inline-flex; align-items: center; gap: 6px; margin-left: 4px; }
+.rec-capture .btn.tiny { margin-left: 0; }
 table.sortable th { cursor: pointer; user-select: none; }
 table.sortable th:hover { color: var(--text); }
 table.sortable th.sort-asc::after { content: ' \25B4'; }

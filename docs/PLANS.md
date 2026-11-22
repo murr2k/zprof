@@ -38,6 +38,23 @@ first release, P4 M55 PMU and Helium counters, post-mortem and fault capture,
 P5 protocol analyzer. Phases B, A and D below are the earlier plan; their
 content is reused, their order is replaced.
 
+Status 2026-11-22: P0 to P3 built and their exit checks pass on the N6. P2:
+capture-then-upload loses no record inside its window (the hooks write the
+PSRAM buffer directly; PROTOCOL.md section 4a), and replay equals live
+(`python -m zprof_bridge check rec.zpr`: the same totals, statistics windows,
+jobs and Timing series whatever the pieces the bytes come in, and the same
+per-thread and per-interrupt totals as the batch analysis; a unit test feeds a
+stream byte by byte). P3: the heartbeat, `ZPROF_PLOT`, `ZPROF_PRINT`, metrics
+and stack watermarks, the live Timing view, and the demo's frame marks, margin
+plot and counters. `integrations/stm32n6-demo/p3check.py` holds the trace
+against `gfx_stats()` and `audio_get_counters()` as the heartbeat reads them:
+on Home and over 60 s of the attract lap, frame marks equal the frames counted
+(at most one in flight at a window's edge), the median present interval equals
+the refresh period (16,673 us), the drops the trace implies equal
+`gfx.dropped`, `margin_min_us` equals the least plotted margin at every
+heartbeat (560 checked), and the audio thread's refill wakeups equal the DAC's
+blocks (22,300 of 22,300). Next: R1.
+
 ## 1. Goal
 
 A live profiler and statistics dashboard for Zephyr targets:

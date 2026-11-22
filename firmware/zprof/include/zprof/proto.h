@@ -86,8 +86,18 @@
  * 0 means "nothing done this time" (the host makes no job of it). */
 #define ZPROF_EV_MARK_START 0x60
 #define ZPROF_EV_MARK_STOP 0x61
+#define ZPROF_EV_PLOT 0x62  /* the series' name (rodata), a signed 32-bit value */
+#define ZPROF_EV_PRINT 0x63 /* the format (rodata), three 32-bit arguments (integers; no %s) */
 
+/* Heartbeat (every CONFIG_ZPROF_HEARTBEAT_MS): one METRIC record per metric, arg =
+ * its index in the hello's dictionary; counters and timers count since the last. */
+#define ZPROF_EV_METRIC 0x70       /* arg metric index; value */
 #define ZPROF_EV_THREAD_STATS 0x71 /* thread, execution cycles low, high (the kernel's own count) */
+#define ZPROF_EV_STACK 0x72        /* thread, stack bytes never used, stack size (every Nth heartbeat) */
+
+#define ZPROF_KIND_COUNTER 1 /* events since the last heartbeat */
+#define ZPROF_KIND_GAUGE 2   /* the value now */
+#define ZPROF_KIND_TIMER 3   /* timestamp ticks spent since the last heartbeat */
 #define ZPROF_EV_SYNC 0x7E         /* kernel cycles low, high, uptime ms */
 #define ZPROF_EV_OVERFLOW 0x7F     /* arg IPSR; dropped, kernel cycles low, high, current thread */
 
@@ -112,10 +122,23 @@
 #define ZPROF_HT_IRQ 8      /* u16 irq, u8 NVIC prio, u8 enabled, u32 handler, u32 arg */
 #define ZPROF_HT_HOOK_COST 9 /* u32 timestamp ticks one hook costs, measured at connect */
 #define ZPROF_HT_CLASSES 10  /* u32 mask of the kernel-object classes recorded (bit = id - 0x10) */
+#define ZPROF_HT_METRIC 11   /* u16 index, u8 kind, u8 0, name NUL unit (the metric dictionary) */
+#define ZPROF_HT_CAPTURE 12  /* u32 state, u32 bytes held, u32 capacity, u32 ms recorded (capture mode) */
 #define ZPROF_HT_END 0xFFFF /* end of a hello or of a thread table update */
 
 /* Control TLV, host to target, in frames on the control channel. */
 #define ZPROF_CT_CLASSES 64 /* u32 mask of kernel-object classes to record; answered with HT_CLASSES */
+#define ZPROF_CT_CAPTURE 65 /* u32 ms (0: until stopped or full): record into the capture buffer, send nothing */
+#define ZPROF_CT_CAPTURE_STOP 66 /* end a capture now: upload what it holds */
+
+/* Capture-then-upload (HT_CAPTURE's state). While recording only a status frame goes
+ * out every 500 ms; then the buffer goes as ordinary trace frames, then DONE, and
+ * streaming carries on (what the ring could not hold meanwhile is an OVERFLOW). */
+#define ZPROF_CAP_OFF 0
+#define ZPROF_CAP_RECORDING 1
+#define ZPROF_CAP_UPLOADING 2
+#define ZPROF_CAP_DONE 3
+#define ZPROF_CAP_UNAVAILABLE 4 /* no buffer: CONFIG_ZPROF_CAPTURE_KB is 0 or the port gave none */
 
 #define ZPROF_TS_SRC_DWT 0
 #define ZPROF_TS_SRC_KCYCLE 1

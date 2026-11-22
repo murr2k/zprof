@@ -59,19 +59,23 @@ static ALWAYS_INLINE uint16_t isr_id(void)
 	return ipsr >= 16u ? (uint16_t)(ipsr - 16u) : (uint16_t)(ZPROF_ISR_EXC | ipsr);
 }
 
-static ALWAYS_INLINE void wr(uint32_t *h, uint32_t v)
-{
-	zprof_ring.w[*h & MASK] = v;
-	(*h)++;
-}
+/* One word at h into the ring (mask MASK) or the capture buffer (mask ~0: no wrap). */
+#define wr(h, v)                       \
+	do {                           \
+		w[*(h) & mask] = (v);  \
+		(*(h))++;              \
+	} while (0)
 
 /* Lock held. */
 static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0,
 				 uint32_t a1, uint32_t a2, uint32_t a3)
 {
 	struct zprof_ring *r = &zprof_ring;
-	uint32_t h = r->head;
-	uint32_t free = ZPROF_RING_WORDS - (h - r->tail);
+	uint32_t *cap = r->cap;
+	uint32_t *w = cap != NULL ? cap : r->w;
+	uint32_t mask = cap != NULL ? UINT32_MAX : MASK;
+	uint32_t h = cap != NULL ? r->cap_len : r->head;
+	uint32_t free = cap != NULL ? r->cap_size - h : ZPROF_RING_WORDS - (h - r->tail);
 	uint32_t need = ZPROF_REC_WORDS(nw) + OVERFLOW_WORDS; /* keep room for an OVERFLOW */
 
 	if (r->dropped != 0u) {
@@ -108,7 +112,31 @@ static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t
 		wr(&h, a3);
 	}
 	compiler_barrier(); /* the record is in the ring before head says so */
-	r->head = h;
+	if (cap != NULL) {
+		r->cap_len = h;
+	} else {
+		r->head = h;
+	}
+}
+
+void zprof_capture_begin(uint32_t *buf, uint32_t words)
+{
+	unsigned int key = arch_irq_lock();
+
+	zprof_ring.cap_len = 0u;
+	zprof_ring.cap_size = words;
+	zprof_ring.cap = buf;
+	arch_irq_unlock(key);
+}
+
+uint32_t zprof_capture_end(void)
+{
+	unsigned int key = arch_irq_lock();
+	uint32_t n = zprof_ring.cap_len;
+
+	zprof_ring.cap = NULL;
+	arch_irq_unlock(key);
+	return n;
 }
 
 ZPROF_HOT __noinline void zprof_put(uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0, uint32_t a1,
@@ -150,6 +178,7 @@ void zprof_session(bool on)
 
 	site_window = zprof_ts_hz() / 5000u;
 	zprof_ring.on = false;
+	zprof_ring.cap = NULL;      /* a capture ends with its session */
 	if (on) {
 		zprof_ring.head = 0u;
 		zprof_ring.tail = 0u;
@@ -286,10 +315,25 @@ ZPROF_HOT void zprof_obj(uint8_t id, uint16_t arg, const void *obj, uint32_t val
 	PUT2(id, arg, PTR(obj), val);
 }
 
-/* Application markers (zprof.h): recorded with every capture preset. */
+/* Application marks, plots and prints (zprof.h): recorded with every capture preset. */
 ZPROF_HOT void zprof_mark(uint8_t id, const char *name, uint32_t value)
 {
 	PUT2(id, 0, PTR(name), value);
+}
+
+void zprof_plot(const char *name, int32_t value)
+{
+	PUT2(ZPROF_EV_PLOT, 0, PTR(name), (uint32_t)value);
+}
+
+void zprof_print(const char *fmt, uint32_t a0, uint32_t a1, uint32_t a2)
+{
+	zprof_put(ZPROF_EV_PRINT, 0, 4, PTR(fmt), a0, a1, a2);
+}
+
+uint32_t zprof_now(void)
+{
+	return ts_now();
 }
 
 ZPROF_HOT void sys_trace_isr_enter(void)

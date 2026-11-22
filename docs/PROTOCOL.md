@@ -20,9 +20,9 @@ u8 channel | u8 flags | u16 seq | u32 len | payload[len]
 
 | Channel | Direction | Content |
 |---|---|---|
-| 0 | both | hello (target), control (host): CT_CLASSES (section 4a); planned START, STOP, CAPTURE_ARM, UPLOAD, later PARAM_SET (only behind the dashboard's arm switch) |
-| 1 | target | metrics (METRIC records) |
-| 2 | target | trace (records, section 2) |
+| 0 | both | hello and statuses (target), control (host): CT_CLASSES, CT_CAPTURE, CT_CAPTURE_STOP (section 4a); later PARAM_SET (only behind the dashboard's arm switch) |
+| 1 | target | reserved (the heartbeat's METRIC records travel with the trace, on its clock: section 4b) |
+| 2 | target | trace (records, section 2), and a capture's upload |
 | 5 | target | heap calls (later) |
 
 `seq` counts frames per channel, so the host sees a lost frame. TCP needs no
@@ -64,10 +64,11 @@ target addresses; the host names them from the ELF.
 | 0x10-0x17 | kernel objects: SEM, MUTEX, MSGQ, QUEUE (k_queue, k_fifo, k_lifo), SLEEP, POLL, TIMER, WORK | call << 4 \| phase (ENTER 1, BLOCK 2, EXIT 3) | object, value. Calls that may block (sem take, mutex lock, msgq put and get, queue get) have no ENTER: one EXIT (the return code) when they do not block, BLOCK (the timeout in ticks, 0xFFFFFFFF forever; for a mutex its owner) then EXIT when they do (the wait is BLOCK to EXIT). A sem give (value: the count after) and a mutex unlock: EXIT only. Other calls: ENTER with their input (a queue put's "allocated", a sleep's time), EXIT where it means something (sleep, poll, timer expiry); work items carry their handler; SLEEP has object 0 (the thread). Calls are numbered per class (`ZPROF_CALL_*`). Not recorded from the zprof sender itself (its sends would trace themselves); a run-time mask of classes (hello tag 10) |
 | 0x60 | MARK_START | | the marker's name (a string literal in rodata: the host reads it from the ELF), value; the running thread's (`zprof.h`: `ZPROF_MARK_START("frame")`) |
 | 0x61 | MARK_STOP | | name, value: 0 means nothing was done this time (no job), anything else completes the job (`ZPROF_MARK_STOP("frame", 1)`) |
-| 0x62 | PLOT | | descriptor, value |
-| 0x63 | PRINT | | format (rodata pointer), arguments |
-| 0x70 | METRIC | metric id | value |
+| 0x62 | PLOT | | name (a string literal in rodata), signed 32-bit value (`ZPROF_PLOT("frame.margin_us", left)`) |
+| 0x63 | PRINT | | format (a string literal in rodata), three 32-bit arguments: integers and characters only, no `%s` or floats (`ZPROF_PRINT("seek to %u ms", ms)`); the host formats it |
+| 0x70 | METRIC | the metric's index in the hello's dictionary | value: a gauge's (signed), a counter's change since the last heartbeat, a timer's timestamp ticks since the last heartbeat (section 4b) |
 | 0x71 | THREAD_STATS | | thread, the kernel's execution cycles low, high: written by the sender once a second, so the host can check its per-thread CPU against the kernel's own count |
+| 0x72 | STACK | | thread, stack bytes never used, stack size: every 10th heartbeat (`CONFIG_ZPROF_STACK_DIVIDER`), with `CONFIG_INIT_STACKS` |
 | 0x7E | SYNC | | 64-bit kernel cycles, 32-bit timestamp, uptime ms |
 | 0x7F | OVERFLOW | IPSR | records dropped, 64-bit kernel cycles, current thread |
 
@@ -85,8 +86,8 @@ boot) at the session's first SYNC and holds the few records before it until
 then, so a reconnect continues the same timeline; a session whose clock is
 behind the last one's is a reboot (a new timeline). Measured on the N6: the
 DWT counter runs through WFI, 40 to 70 ppm faster than the kernel's
-SysTick-based count. Whether the DWT counter runs through WFI with no probe attached is
-measured in P1; if it does not, IDLE_EXIT carries the 64-bit count.
+SysTick-based count, with no probe attached. On a chip where it stops in
+sleep, IDLE_EXIT carries the 64-bit count.
 
 ## 4. Hello (channel 0, target to host, at connect)
 
@@ -95,7 +96,9 @@ build UUID (a `const` symbol the bridge also reads from the ELF, since Zephyr
 links with `--build-id=none`); timestamp source and Hz; kernel cycle Hz; ring
 size; enabled event classes; the sender thread; the thread table (pointer,
 name, priority, state, entry, stack base and size); the IRQ table (number,
-handler, argument, NVIC priority); the metric dictionary. A table ends with
+handler, argument, NVIC priority); the metric dictionary (tag 11, one entry
+per metric: `u16 index | u8 kind | u8 0 | name NUL unit`, kind 1 counter, 2
+gauge, 3 timer); the capture status (tag 12, section 4a). A table ends with
 an END entry (0xFFFF); the thread table is sent again whenever it changes.
 
 Right after the hello, in its own control frame: the hook cost (tag 9, u32
@@ -114,10 +117,44 @@ without waiting; a frame longer than its 64-byte buffer is skipped.
 | Tag | Value | Answer |
 |---|---|---|
 | 64 CT_CLASSES | u32 mask of the kernel-object classes to record (bit = id - 0x10) | HT_CLASSES with the mask now in effect, in a control frame |
+| 65 CT_CAPTURE | u32 ms to capture (0: until stopped or the buffer is full) | HT_CAPTURE (tag 12): `u32 state, u32 bytes held, u32 capacity, u32 ms recorded`; state 0 off, 1 recording, 2 uploading, 3 done, 4 no buffer |
+| 66 CT_CAPTURE_STOP | none | the capture ends and uploads |
 
 Every session starts recording all classes; the bridge sends the page's choice
 again at every connection (`presets.py`: Scheduling 0x00, Timing 0x02, Kernel
 objects 0xFF).
+
+Capture-then-upload. The target takes `CONFIG_ZPROF_CAPTURE_KB` from the
+port's `zprof_port_alloc()` at the first capture and keeps it. While it
+records, the hooks write into that buffer instead of the ring, from its
+start, and nothing drains it: no sender has to keep up and nothing but a
+status every 500 ms goes on the network. At the end (the time asked for,
+CT_CAPTURE_STOP, or the buffer full: a record refused, or less than 64 words
+left) the hooks go back to the ring, and the target sends a status (2), the
+buffer as ordinary trace frames of whole records, and a status (3), then
+streams as before. So a capture decodes as the stream it would have been,
+the ring's older records sent before it. The ring is not drained during the
+upload: what it cannot hold is an OVERFLOW after the capture, never a gap
+inside it. Measured on the N6 during the attract lap with two 1.5 MB
+screenshots sent meanwhile (each about 2 MB/s of events while it runs): a
+4 MB capture of 8 s with no record lost; moving the ring into the buffer
+from the sender, as the first version did, lost about 7,900 records at the
+screenshots, while the network stack held the sender off.
+
+## 4b. Heartbeat
+
+Every `CONFIG_ZPROF_HEARTBEAT_MS` (100) the sender calls the port's
+`zprof_port_heartbeat()`, where the application sets its gauges, then writes
+one METRIC record per metric in dictionary order, index 0 first: a heartbeat
+ends where the index starts again (an interrupt's records may come between).
+Counters and timers are reset as they are read. Metrics are the
+application's `ZPROF_METRIC_DEFINE(var, "name", COUNTER|GAUGE|TIMER, "unit")`
+(`ZPROF_ADD`, `ZPROF_SET`, `ZPROF_TIMER_START/STOP`) and the built-ins:
+`cpu.load` (permille, with `CONFIG_SCHED_THREAD_USAGE_ALL`), `zprof.dropped`
+(records lost), `zprof.ring_peak` (the ring's fullest, percent). Because the
+values are read on the target at a point of the trace's own clock, the host
+can hold the trace's events against them exactly
+(`integrations/stm32n6-demo/p3check.py`).
 
 ## 5. Recording file (`.zpr`)
 

@@ -52,6 +52,18 @@ export interface LiveStatus {
   preset?: string | null
   /** What the page asked for (applied again at every new session). */
   want?: number | null
+  /** Capture-then-upload: state (0 off, 1 recording, 2 uploading, 3 done, 4 no buffer), bytes held, capacity, ms recorded. */
+  capture?: { state: number; bytes: number; capacity: number; ms: number } | null
+}
+/** One series of the Timing view (ms of target time, values). */
+export interface TimingSeries { t: number[]; v: number[]; kind?: string; unit?: string; thread?: string }
+/** The Timing view's data: heartbeat metrics, plots, marked spans (start ms, duration us), prints, stacks. */
+export interface LiveTiming {
+  metrics: Record<string, TimingSeries>
+  plots: Record<string, TimingSeries>
+  spans: Record<string, TimingSeries>
+  prints: [number, string, string][]
+  stacks: Record<string, { used: number; size: number; t_ms: number }>
 }
 /** One thread or interrupt in the schedulability analysis; times in us. */
 export interface SchedRow {
@@ -224,6 +236,9 @@ export class LiveLink {
   private readonly schedL = new Set<(s: LiveSched) => void>()
   /** The last schedulability analysis of the measured system (every few seconds). */
   sched: LiveSched | null = null
+  /** The Timing view's data so far (the bridge's full message, then what is new each second). */
+  readonly timing: LiveTiming = { metrics: {}, plots: {}, spans: {}, prints: [], stacks: {} }
+  private readonly timingL = new Set<(t: LiveTiming) => void>()
   private req = 0
   private readonly pending = new Map<number, (s: LiveSched) => void>()
 
@@ -284,10 +299,36 @@ export class LiveLink {
       }
       this.sched = s
       for (const f of this.schedL) f(s)
+    } else if (m.type === 'timing') {
+      this.mergeTiming(m as unknown as LiveTiming & { full: boolean })
+      for (const f of this.timingL) f(this.timing)
     } else if (m.type === 'waiting') {
       this.setState('waiting')
     }
   }
+
+  private mergeTiming(m: LiveTiming & { full: boolean }) {
+    const KEEP = 4800
+    const tm = this.timing
+    for (const key of ['metrics', 'plots', 'spans'] as const) {
+      const into = tm[key]
+      if (m.full) for (const k of Object.keys(into)) delete into[k]
+      for (const [name, s] of Object.entries(m[key] ?? {})) {
+        const cur = into[name] ?? (into[name] = { t: [], v: [], kind: s.kind, unit: s.unit, thread: s.thread })
+        cur.t.push(...s.t)
+        cur.v.push(...s.v)
+        if (cur.t.length > KEEP) { cur.t.splice(0, cur.t.length - KEEP); cur.v.splice(0, cur.v.length - KEEP) }
+      }
+    }
+    if (m.full) tm.prints.length = 0
+    tm.prints.push(...m.prints)
+    if (tm.prints.length > 500) tm.prints.splice(0, tm.prints.length - 500)
+    Object.assign(tm.stacks, m.stacks)
+  }
+
+  /** Capture-then-upload for `ms` (0: until stopped or full), or stop the one running. */
+  capture(ms: number) { return this.send({ type: 'capture', ms }) }
+  captureStop() { return this.send({ type: 'capture_stop' }) }
 
   /** A message to the bridge; false when the page is not connected to one. */
   send(m: object): boolean {
@@ -327,6 +368,7 @@ export class LiveLink {
   onState(f: (s: LinkState) => void): Off { this.stateL.add(f); return () => this.stateL.delete(f) }
   onStatus(f: (s: LiveStatus) => void): Off { this.statusL.add(f); return () => this.statusL.delete(f) }
   onSched(f: (s: LiveSched) => void): Off { this.schedL.add(f); return () => this.schedL.delete(f) }
+  onTiming(f: (t: LiveTiming) => void): Off { this.timingL.add(f); return () => this.timingL.delete(f) }
 
   close() {
     clearTimeout(this.timer)

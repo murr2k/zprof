@@ -60,6 +60,9 @@ class Hello:
     sender: int = 0
     hook_cost: int = 0  # timestamp ticks per hook, measured by the target at connect
     classes: int = 0xFF  # kernel-object classes the target records (bit = id - OBJ_FIRST); its answer to a change too
+    metrics: dict = field(default_factory=dict)   # index -> (name, kind, unit): the heartbeat's dictionary
+    # capture-then-upload: state (CAP_*), bytes held, capacity (0: none), ms recorded; the last report
+    capture: tuple = (0, 0, 0, 0)
 
 
 class StreamError(Exception):
@@ -85,6 +88,7 @@ class Decoder:
         self._hello_done = False
         self._last_abs: int | None = None
         self.on_session = None  # callback(kind): 'first', 'reconnect' or 'reboot', at its first SYNC
+        self.on_capture = None  # callback((state, bytes, capacity, ms)): a capture status from the target
         self._reset_session()
 
     def _reset_session(self) -> None:
@@ -179,6 +183,14 @@ class Decoder:
                 h.hook_cost = struct.unpack_from("<I", v)[0]
             elif tag == P.HT_CLASSES:
                 h.classes = struct.unpack_from("<I", v)[0]
+            elif tag == P.HT_METRIC:
+                idx, kind = struct.unpack_from("<HB", v)
+                name, _, unit = v[4:].partition(b"\0")
+                h.metrics[idx] = (name.decode("utf-8", "replace"), kind, unit.decode("utf-8", "replace"))
+            elif tag == P.HT_CAPTURE:
+                h.capture = struct.unpack_from("<IIII", v)
+                if self.on_capture:
+                    self.on_capture(h.capture)
             elif tag == P.HT_IRQ:
                 irq, prio, en, handler, arg = struct.unpack_from("<HBBII", v)
                 self.irqs[irq] = Irq(irq, prio, bool(en), handler, arg)

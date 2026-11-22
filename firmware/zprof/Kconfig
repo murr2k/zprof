@@ -50,6 +50,26 @@ config ZPROF_SYNC_MS
 	int "Interval of SYNC records, ms"
 	default 250
 
+config ZPROF_HEARTBEAT_MS
+	int "Heartbeat: every metric sent this often, ms"
+	default 100
+
+config ZPROF_STACK_DIVIDER
+	int "Stack watermarks every Nth heartbeat (0: never)"
+	default 10
+	help
+	  Each thread's stack bytes never used (needs INIT_STACKS), one
+	  STACK record per thread.
+
+config ZPROF_CAPTURE_KB
+	int "Capture-then-upload buffer, KB (0: no capture mode)"
+	default 0
+	help
+	  Asked for from zprof_port_alloc() at the first capture and kept.
+	  While a capture records, the sender moves the ring into it and
+	  sends only a status every 500 ms; at the end it uploads it. At
+	  20,000 events a second (about 250 KB/s) 4096 KB hold 16 s.
+
 config ZPROF_TRANSPORT_TCP
 	bool "Send over TCP"
 	default y
