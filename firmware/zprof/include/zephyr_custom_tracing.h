@@ -25,38 +25,57 @@
 #define ZP(cls, call, ph, obj, val) \
 	zprof_obj(ZPROF_EV_##cls, ZPROF_OBJ_ARG(ZPROF_CALL_##call, ZPROF_PH_##ph), (obj), (uint32_t)(val))
 
+/* The call site of a blocking call: these hooks expand inside the kernel function
+ * (z_impl_k_sem_take, ...) that the application's inline k_sem_take() calls, so
+ * its return address is the application's call. The thread's next switch-out
+ * carries it (SWITCH_OUT's third word), whatever the capture preset. Every other
+ * *_blocking hook gets it too (zprof_trace_defaults.h). */
+#define ZP_SITE() zprof_site(__builtin_return_address(0))
+
+/* A blocking hook with a timeout: Zephyr fires some of them before it checks for
+ * K_NO_WAIT (z_impl_k_queue_get), so a call that cannot block would leave a call
+ * site (named on the thread's next, unhooked wait) and a BLOCK record without a
+ * wait. Neither for K_NO_WAIT. */
+#define ZP_BLOCK(to, rec) \
+	do { \
+		if (!K_TIMEOUT_EQ((to), K_NO_WAIT)) { \
+			ZP_SITE(); \
+			rec; \
+		} \
+	} while (0)
+
 /* One record per call that does not block: no ENTER for the calls that may
  * block (most never do), the call counted at its EXIT. One that blocks adds a
  * BLOCK record, which carries the timeout (a semaphore's count, a queue's fill
  * are known there anyway: 0, or full) or, for a mutex, its owner. The wait is
  * BLOCK to EXIT. One record instead of two for every call that does not block. */
 #define sys_port_trace_k_sem_give_exit(sem)              ZP(SEM, GIVE, EXIT, sem, (sem)->count)
-#define sys_port_trace_k_sem_take_blocking(sem, to)      ZP(SEM, TAKE, BLOCK, sem, ZP_TO(to))
+#define sys_port_trace_k_sem_take_blocking(sem, to)      ZP_BLOCK(to, ZP(SEM, TAKE, BLOCK, sem, ZP_TO(to)))
 #define sys_port_trace_k_sem_take_exit(sem, to, ret)     ZP(SEM, TAKE, EXIT, sem, ret)
 #define sys_port_trace_k_sem_reset(sem)                  ZP(SEM, RESET, ENTER, sem, (sem)->count)
 
-#define sys_port_trace_k_mutex_lock_blocking(m, to)      ZP(MUTEX, LOCK, BLOCK, m, ZP_P((m)->owner))
+#define sys_port_trace_k_mutex_lock_blocking(m, to)      ZP_BLOCK(to, ZP(MUTEX, LOCK, BLOCK, m, ZP_P((m)->owner)))
 #define sys_port_trace_k_mutex_lock_exit(m, to, ret)     ZP(MUTEX, LOCK, EXIT, m, ret)
 #define sys_port_trace_k_mutex_unlock_exit(m, ret)       ZP(MUTEX, UNLOCK, EXIT, m, ret)
 
-#define sys_port_trace_k_msgq_put_blocking(q, to)        ZP(MSGQ, PUT, BLOCK, q, ZP_TO(to))
+#define sys_port_trace_k_msgq_put_blocking(q, to)        ZP_BLOCK(to, ZP(MSGQ, PUT, BLOCK, q, ZP_TO(to)))
 #define sys_port_trace_k_msgq_put_exit(q, to, ret)       ZP(MSGQ, PUT, EXIT, q, ret)
-#define sys_port_trace_k_msgq_put_front_blocking(q, to)  ZP(MSGQ, PUT_FRONT, BLOCK, q, ZP_TO(to))
+#define sys_port_trace_k_msgq_put_front_blocking(q, to)  ZP_BLOCK(to, ZP(MSGQ, PUT_FRONT, BLOCK, q, ZP_TO(to)))
 #define sys_port_trace_k_msgq_put_front_exit(q, to, ret) ZP(MSGQ, PUT_FRONT, EXIT, q, ret)
-#define sys_port_trace_k_msgq_get_blocking(q, to)        ZP(MSGQ, GET, BLOCK, q, ZP_TO(to))
+#define sys_port_trace_k_msgq_get_blocking(q, to)        ZP_BLOCK(to, ZP(MSGQ, GET, BLOCK, q, ZP_TO(to)))
 #define sys_port_trace_k_msgq_get_exit(q, to, ret)       ZP(MSGQ, GET, EXIT, q, ret)
 #define sys_port_trace_k_msgq_purge(q)                   ZP(MSGQ, PURGE, ENTER, q, (q)->used_msgs)
 
 /* fifos and lifos are k_queues: recorded once, at the queue level */
 #define sys_port_trace_k_queue_queue_insert_enter(q, alloc) ZP(QUEUE, PUT, ENTER, q, alloc)
-#define sys_port_trace_k_queue_get_blocking(q, to)       ZP(QUEUE, GET, BLOCK, q, ZP_TO(to))
+#define sys_port_trace_k_queue_get_blocking(q, to)       ZP_BLOCK(to, ZP(QUEUE, GET, BLOCK, q, ZP_TO(to)))
 #define sys_port_trace_k_queue_get_exit(q, to, ret)      ZP(QUEUE, GET, EXIT, q, (ret) != NULL)
 
-#define sys_port_trace_k_thread_sleep_enter(to)          ZP(SLEEP, SLEEP, ENTER, NULL, ZP_TO(to))
+#define sys_port_trace_k_thread_sleep_enter(to)          do { ZP_SITE(); ZP(SLEEP, SLEEP, ENTER, NULL, ZP_TO(to)); } while (0)
 #define sys_port_trace_k_thread_sleep_exit(to, ret)      ZP(SLEEP, SLEEP, EXIT, NULL, ret)
-#define sys_port_trace_k_thread_msleep_enter(ms)         ZP(SLEEP, MSLEEP, ENTER, NULL, ms)
+#define sys_port_trace_k_thread_msleep_enter(ms)         do { ZP_SITE(); ZP(SLEEP, MSLEEP, ENTER, NULL, ms); } while (0)
 #define sys_port_trace_k_thread_msleep_exit(ms, ret)     ZP(SLEEP, MSLEEP, EXIT, NULL, ret)
-#define sys_port_trace_k_thread_usleep_enter(us)         ZP(SLEEP, USLEEP, ENTER, NULL, us)
+#define sys_port_trace_k_thread_usleep_enter(us)         do { ZP_SITE(); ZP(SLEEP, USLEEP, ENTER, NULL, us); } while (0)
 #define sys_port_trace_k_thread_usleep_exit(us, ret)     ZP(SLEEP, USLEEP, EXIT, NULL, ret)
 
 #define sys_port_trace_k_poll_api_poll_enter(ev)         ZP(POLL, POLL, ENTER, ev, 0)

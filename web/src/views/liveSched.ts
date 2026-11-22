@@ -5,14 +5,22 @@ import { PriorityMap, type MapPoint } from '../charts/PriorityMap'
 import { statusColor, type Status } from '../charts/status'
 import { dataTable } from '../charts/dataTable'
 import { level, liveRule } from '../thresholds'
-import { button, el, esc, glyph } from '../dom'
-import { liveLink, type LiveSched, type SchedOverride, type SchedRow } from '../live/link'
+import { button, el, esc, glyph, sortableTable } from '../dom'
+import { liveLink, type LiveSched, type SchedLoop, type SchedOverride, type SchedRow } from '../live/link'
 import type { View } from './common'
 
 const us = (x: number | null | undefined) =>
   x === null || x === undefined ? '' : x >= 10_000 ? `${(x / 1000).toFixed(1)} ms` : x >= 100 ? `${Math.round(x).toLocaleString('en-US')} us` : `${x.toFixed(1)} us`
 const num = (x: number | null | undefined, text?: string): CellContent =>
   x === null || x === undefined ? '' : { value: x, text: text ?? us(x) }
+
+/** The event loop's shape, sorted by how often a handler blocks (an Active Object: 0). */
+export const loopText = (lp: SchedLoop | null | undefined) => !lp ? '' :
+  lp.shape === 'ao' ? 'active object'
+    : lp.shape === 'ao-inside' ? `waits inside ${lp.inside_pct < 1 ? lp.inside_pct.toFixed(2) : lp.inside_pct.toFixed(0)} %`
+      : lp.shape === 'multi' ? `${lp.wait_points} wait points`
+        : `marked, ${lp.wait_points} wait point${lp.wait_points === 1 ? '' : 's'}`
+const loopCell = (r: SchedRow): CellContent => (r.loop ? { value: r.loop.shape === 'multi' ? 100 + r.loop.wait_points : r.loop.inside_pct, text: loopText(r.loop) } : '')
 
 /**
  * Schedulability: the measured system against its deadlines, from the bridge's
@@ -79,7 +87,36 @@ export const liveSched: View = ({ container, theme: t }) => {
   const wtools = el('div', 'row-tools')
   wtools.append(add, run, suggest, back)
   secW.append(form, wtools, changes)
-  side.append(secA, secR, secW)
+  const secL = el('div', 'sec')
+  secL.innerHTML = '<h4>Event loop <span class="grow"></span><span>where the thread picked above waits</span></h4>'
+  const loopBox = el('div', 'loopbox')
+  secL.append(loopBox)
+  side.append(secA, secR, secW, secL)
+  const renderLoop = () => {
+    const r = rowsByName().get(pick.value)
+    const lp = r?.loop
+    loopBox.replaceChildren()
+    if (!r || !lp) {
+      loopBox.append(el('div', 'sched-about', 'Too few waits seen yet.'))
+      return
+    }
+    const what = lp.shape === 'ao' ? 'An Active Object: one wait point, every event run to completion.'
+      : lp.shape === 'ao-inside' ? `One event wait point; it blocks while handling ${lp.inside_pct < 1 ? lp.inside_pct.toFixed(2) : lp.inside_pct.toFixed(1)} % of its events.`
+        : lp.shape === 'multi' ? `A sequential loop: ${lp.wait_points} places it waits as it goes round.`
+          : `Its jobs come from the "${r.marks}" marks; it waits at ${lp.wait_points} place${lp.wait_points === 1 ? '' : 's'}.`
+    loopBox.append(el('div', 'sched-about', `<b>${esc(r.name)}</b>: ${esc(what)}` +
+      (lp.sites ? '' : ' (The firmware sent no call sites: wait points are kernel objects only.)')))
+    const tbl = sortableTable(el('table', 'audit'))
+    const total = lp.points.reduce((a, [, n]) => a + n, 0)
+    tbl.innerHTML = '<tr><th>Waits on, at</th><th class="num">Waits</th><th class="num">Inside a handler</th></tr>' +
+      lp.points.map(([lab, n]) => {
+        const ins = lp.inside_by.find(([l]) => l === lab)?.[1] ?? 0
+        return `<tr><td class="mono">${esc(lab)}</td><td class="num">${n.toLocaleString('en-US')} (${(100 * n / (total || 1)).toFixed(1)} %)</td>` +
+          `<td class="num">${ins ? ins.toLocaleString('en-US') : ''}</td></tr>`
+      }).join('')
+    loopBox.append(tbl)
+  }
+  pick.addEventListener('change', renderLoop)
 
   // ---------------------------------------------------------------- what-if state
   const overrides: Record<string, SchedOverride> = {}
@@ -187,6 +224,7 @@ export const liveSched: View = ({ container, theme: t }) => {
       fillForm()
     }
     suggest.disabled = !(measured?.order && Object.keys(measured.order).length)
+    renderLoop()
   }
 
   const off = link.onSched((s) => {
@@ -269,13 +307,14 @@ function build(host: HTMLElement, t: Theme) {
     const rows = [...s.rows].sort((a, b) => order(a) - order(b) || (a.kind === 'irq' ? b.u_pct - a.u_pct : a.prio - b.prio))
     grid.setTitle(`${wi}Threads and interrupts (us): C execution per job (net of interrupts), S waits inside a job, ` +
       'B time ready while a lower-priority thread ran, R response; bound from the analysis')
-    const head = ['Thread', 'Kind', 'Prio', 'Period', 'Jitter', 'C max', 'C p99', 'S', 'B', 'B by', 'Deadline', 'R bound', 'R measured',
-      'Slack %', 'Room', 'U %', 'Jobs']
+    const head = ['Thread', 'Kind', 'Event loop', 'Prio', 'Period', 'Jitter', 'C max', 'C p99', 'S', 'B', 'B by', 'Deadline', 'R bound',
+      'R measured', 'Slack %', 'Room', 'U %', 'Jobs']
     grid.setTableContent([head, ...rows.map((r): CellContent[] => {
       const st: Status = (r.status as Status) ?? 'idle'
-      const kind = r.kind === 'irq' ? 'interrupt' : `${r.coop ? 'coop' : 'preempt'}, ${r.per_period ? 'per period' : r.periodic ? 'periodic' : 'events'}`
+      const kind = r.kind === 'irq' ? 'interrupt'
+        : `${r.coop ? 'coop' : 'preempt'}, ${r.marks ? `marked "${r.marks}"` : r.per_period ? 'per period' : r.periodic ? 'periodic' : 'events'}`
       return [
-        r.sender ? `${r.name} (zprof)` : r.name, kind, r.prio,
+        r.sender ? `${r.name} (zprof)` : r.name, kind, loopCell(r), r.prio,
         num(r.t_us, r.t_us === null ? '' : `${r.periodic ? '' : '>= '}${us(r.t_us)}`), num(r.kind === 'irq' ? null : r.j_us),
         num(r.c_us), num(r.c_p99_us || null), num(r.s_us || null), num(r.b_us || null), r.b_by,
         num(r.d_us, r.d_us === null ? '' : `${us(r.d_us)}${r.counts ? '' : ' (period)'}`),

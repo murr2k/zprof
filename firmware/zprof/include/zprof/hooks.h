@@ -30,6 +30,9 @@ void zprof_hook_name(struct k_thread *thread);
 /* A kernel-object record (proto.h): class id, call << 4 | phase, the object, a value. */
 void zprof_obj(uint8_t id, uint16_t arg, const void *obj, uint32_t val);
 
+/* The running thread is about to pend: where it called from (a return address). */
+void zprof_site(void *pc);
+
 /* Called by the architecture code; defined (strong) by zprof. */
 void sys_trace_isr_enter(void);
 void sys_trace_isr_exit(void);

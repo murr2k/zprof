@@ -42,11 +42,20 @@ of a thread are its warm-up and make no jobs; records lost at a ring overflow
 discard the jobs in flight ("left out").
 
 **A loop with no one release object** (the demo's UI loop sleeps one to three
-times a frame) is declared with a period: `"period_us"`. A job is then one period
-of its work: C is the most work the thread did in any window of one period, which
-is never less than any one cycle's and may be more (a window can hold the end of
-one cycle and the start of the next). Markers around the cycle (P3) will make it
-exact.
+times a frame) marks its jobs: `ZPROF_MARK_START("frame")` where one begins,
+`ZPROF_MARK_STOP("frame", 1)` where it is done, `ZPROF_MARK_STOP("frame", 0)` where
+a cycle turns out to have nothing to do (no job). The deadlines file names the
+marker (`"job": "frame"`); C is the thread's work between the marks, waits
+between them are self-suspension, and with `"period_us"` its releases are that
+period (a frame every refresh) rather than the marks' own times. The demo marks
+frames in `gfx.c` (branch `zprof-integration`): STOP just before `present()`
+hands the frame to the display, START right after it returns, so a frame's job
+includes the tail after the previous hand-over (screen switches), as the demo's
+own frame budget does; an idle slot ends with STOP(0) before its sleep. Without
+marks (another firmware), `"period_us"` alone makes a job of one period of the
+thread's work: the most it did in any window of one period, never less than one
+cycle's and possibly more (a window can hold the end of one cycle and the start
+of the next).
 
 **Arrivals.** For each thread (its job releases) and each interrupt (its entries):
 the *minimum distance function* dmin(k), the shortest span that held k + 1
@@ -72,6 +81,25 @@ verdict when any are declared; a periodic thread without one is analysed against
 its period for information (a polling loop has a period, not necessarily a
 deadline). Without a deadlines file every periodic thread's period counts.
 zprof's own sender never gets a deadline of its own.
+
+**Event loops.** Every blocking switch-out carries the call site of the blocking
+call (a return address in the caller's code; PROTOCOL.md, SWITCH_OUT), named
+`file.c:123 (function)` through the calls the compiler inlined (binutils'
+`addr2line -i` from the Zephyr SDK when it is there, else the line table, else
+`symbol+offset`). A *wait point* is a call site and what it waits on (a wait
+queue, a sleep). Each thread's shape, from the wait points it used:
+
+| Shape | Means |
+|---|---|
+| active object | one wait point; every event run to completion |
+| waits inside N % | one event wait point; while handling N % of its events it blocked somewhere else (self-suspension: part of its response) |
+| N wait points | a sequential loop: it waits at several places as it goes round |
+| marked | jobs from application marks (a time-triggered loop) |
+
+Wait points under 1 % of a thread's waits are listed, not counted. Observed only:
+a blocking call on a path the run never took is not there; the complement is a
+static call graph from each thread's entry to the blocking kernel calls, which
+sees every path but not through function pointers (device APIs, callbacks).
 
 ## 3. The analysis
 
@@ -132,7 +160,9 @@ thread), a thread without a period above it (rate-limit its input, or run it bel
 for a cooperative thread that means preemptible; Zephyr's network traffic-class
 threads have `CONFIG_NET_TC_THREAD_PREEMPTIVE` and `CONFIG_NET_TC_THREAD_PRIO_CUSTOM`),
 a periodic one with a longer deadline above it (deadline monotonic order), else
-its work. Also: blocking above its limit (who, and whether measured or a
+its work. A thread with a deadline whose handlers block in more than `sched.*.inside_pct` of
+its events gets its own recommendation (where it waits, and how long at worst);
+the others are listed together, for information. Also: blocking above its limit (who, and whether measured or a
 cooperative run), the load of threads without a period above it, a measured
 response longer than the bound (the model misses a cause: an interrupt or
 scheduler lock, or a wait inside the job counted as the release), and a priority
@@ -173,8 +203,9 @@ objects.
   under priority inheritance is not derived from lock hold times.
 - A job is the thread's release-to-block cycle; a thread that serves two kinds of
   request on one wait queue is one task.
-- Per-period jobs (section 2) over-estimate C by up to the work that straddles a
-  cycle boundary.
+- Per-period jobs (section 2, without marks) over-estimate C by up to the work
+  that straddles a cycle boundary. On the demo's Home screen: 15.6 ms per period
+  against 6.3 ms per marked frame.
 - Each thread's densest window is assumed to coincide with every other's: the
   classic pessimism of composing worst cases. Bursts that never occur together in
   practice still add up in the bound.

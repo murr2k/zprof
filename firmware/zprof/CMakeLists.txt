@@ -13,7 +13,8 @@ if(CONFIG_ZPROF)
   if(NOT ZPROF_GEN_RESULT EQUAL 0)
     message(FATAL_ERROR "zprof: gen_trace_defaults.py failed on ${ZPROF_TRACING_H}")
   endif()
-  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS ${ZPROF_TRACING_H})
+  set_property(DIRECTORY APPEND PROPERTY CMAKE_CONFIGURE_DEPENDS
+               ${ZPROF_TRACING_H} ${CMAKE_CURRENT_LIST_DIR}/scripts/gen_trace_defaults.py)
 
   # Global: tracing.h is included by the kernel, drivers and subsystems.
   zephyr_include_directories(include ${ZPROF_GEN_DIR})

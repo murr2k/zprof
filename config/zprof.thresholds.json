@@ -19,6 +19,7 @@
     { "metric": "wq.*.item_us", "unit": "us", "op": ">=", "warn": 200, "crit": 400, "note": "Longest item on a work queue; on a cooperative queue it delays every preemptible thread" },
     { "metric": "sched.*.slack_pct", "unit": "%", "op": "<=", "warn": 20, "crit": 0, "note": "Schedulability: (deadline - response-time bound) / deadline. At 0 or below the analysis says the thread can miss its deadline under the load observed" },
     { "metric": "sched.*.blocking_pct", "unit": "%", "op": ">=", "warn": 10, "crit": 25, "note": "Schedulability: worst time ready while a lower-priority thread ran (cooperative, lock holder), as a share of the deadline" },
+    { "metric": "sched.*.inside_pct", "unit": "%", "op": ">=", "warn": 5, "crit": 25, "note": "Schedulability: share of a thread's events whose handling blocks on something other than its event wait point (not run to completion); a recommendation for threads with deadlines, information for the others" },
     { "metric": "sched.scale", "unit": "x", "op": "<", "warn": 1.25, "crit": 1, "note": "Schedulability: the factor every execution time (threads and interrupts) can grow by with every deadline in the verdict met; below 1, it is already short" },
     { "metric": "sched.*.sporadic_pct", "unit": "%", "op": ">=", "warn": 25, "crit": 50, "note": "Schedulability: share of the deadline that threads above it without a period (network, commands) can take, from the bursts observed" },
     { "metric": "irq.*.per_s", "unit": "/s", "op": ">=", "warn": 3000, "crit": 6000 },

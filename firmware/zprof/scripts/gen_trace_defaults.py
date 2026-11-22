@@ -50,6 +50,19 @@ def hooks(text: str) -> list[tuple[str, str, str]]:
     return out
 
 
+# Named _blocking, but the calling thread does not wait there: a condvar's signal,
+# and a queue insert (Zephyr v4.4.0 fires it on every insert, with K_FOREVER).
+NOT_BLOCKING = {"sys_port_trace_k_condvar_signal_blocking", "sys_port_trace_k_queue_queue_insert_blocking",
+                "sys_port_trace_k_queue_insert_blocking"}
+
+
+def site_hook(name: str) -> bool:
+    """Hooks just before the calling thread pends: they record the call site."""
+    if name in NOT_BLOCKING:
+        return False
+    return name.endswith("_blocking") or name == "sys_port_trace_k_condvar_wait_enter"
+
+
 def main() -> None:
     if len(sys.argv) < 3:
         raise SystemExit(__doc__)
@@ -69,6 +82,13 @@ def main() -> None:
         "",
     ]
     for name, params, mbody in found:
+        if site_hook(name) and not mbody:
+            # the thread is about to pend here: its call site, for its next switch-out;
+            # not for K_NO_WAIT (Zephyr fires some of these before it checks for it)
+            site = "zprof_site(__builtin_return_address(0))"
+            args = [a.strip() for a in params.strip("()").split(",")]
+            mbody = (f"do {{ if (!K_TIMEOUT_EQ((timeout), K_NO_WAIT)) {{ {site}; }} }} while (0)"
+                     if "timeout" in args else site)
         body += [f"#ifndef {name}", f"#define {name}{params}{(' ' + mbody) if mbody else ''}", "#endif"]
     body += ["", "#endif /* ZPROF_TRACE_DEFAULTS_H_ */", ""]
     new = "\n".join(body)

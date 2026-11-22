@@ -23,6 +23,7 @@
 
 #include <zprof/hooks.h>
 #include <zprof/proto.h>
+#include <zprof/zprof.h>
 
 #include "zprof_internal.h"
 
@@ -137,10 +138,17 @@ void zprof_sync(void)
 	arch_irq_unlock(key);
 }
 
+/* A call site counts for a switch-out this soon after its hook (timestamp ticks;
+ * 200 us). A real block switches out within microseconds; a "_blocking" hook
+ * whose call then did not block leaves an older one, which must not name the
+ * thread's next, unhooked wait. */
+static uint32_t site_window;
+
 void zprof_session(bool on)
 {
 	unsigned int key = arch_irq_lock();
 
+	site_window = zprof_ts_hz() / 5000u;
 	zprof_ring.on = false;
 	if (on) {
 		zprof_ring.head = 0u;
@@ -183,6 +191,7 @@ uint32_t zprof_ts_hz(void)
 #define PUT0(id, arg)             zprof_put(id, arg, 0, 0, 0, 0, 0)
 #define PUT1(id, arg, a0)         zprof_put(id, arg, 1, (uint32_t)(a0), 0, 0, 0)
 #define PUT2(id, arg, a0, a1)     zprof_put(id, arg, 2, (uint32_t)(a0), (uint32_t)(a1), 0, 0)
+#define PUT3(id, arg, a0, a1, a2) zprof_put(id, arg, 3, (uint32_t)(a0), (uint32_t)(a1), (uint32_t)(a2), 0)
 #define PTR(p)                    ((uint32_t)(uintptr_t)(p))
 
 ZPROF_HOT void zprof_hook_switched_in(void)
@@ -197,11 +206,33 @@ BUILD_ASSERT(ZPROF_THS_PENDING == _THREAD_PENDING && ZPROF_THS_SLEEPING == _THRE
 	     ZPROF_THS_SUSPENDED == _THREAD_SUSPENDED && ZPROF_THS_QUEUED == _THREAD_QUEUED,
 	     "Zephyr's thread state bits moved: update ZPROF_THS_* in proto.h");
 
+/* The call site of the last blocking call (zprof_site), and its thread. A thread
+ * that blocks switches out right after its blocking hook; another thread's
+ * blocking call in between (it preempted this one) takes the slot, and this
+ * switch-out goes without a site. */
+static void *site_pc;
+static struct k_thread *site_th;
+static uint32_t site_ts;
+
+ZPROF_HOT void zprof_site(void *pc)
+{
+	site_pc = pc;
+	site_th = _current;
+	site_ts = ts_now();
+}
+
 ZPROF_HOT void zprof_hook_switched_out(void)
 {
 	struct k_thread *t = _current;
+	uint32_t st = t->base.thread_state;
 
-	PUT2(ZPROF_EV_SWITCH_OUT, t->base.thread_state, PTR(t), PTR(t->base.pended_on));
+	if (site_th == t && (st & (_THREAD_PENDING | _THREAD_SLEEPING | _THREAD_SUSPENDED)) &&
+	    !(st & _THREAD_QUEUED) && ts_now() - site_ts < site_window) {
+		site_th = NULL;
+		PUT3(ZPROF_EV_SWITCH_OUT, st, PTR(t), PTR(t->base.pended_on), PTR(site_pc));
+		return;
+	}
+	PUT2(ZPROF_EV_SWITCH_OUT, st, PTR(t), PTR(t->base.pended_on));
 }
 
 ZPROF_HOT void zprof_hook_ready(struct k_thread *thread)
@@ -253,6 +284,12 @@ ZPROF_HOT void zprof_obj(uint8_t id, uint16_t arg, const void *obj, uint32_t val
 		return;
 	}
 	PUT2(id, arg, PTR(obj), val);
+}
+
+/* Application markers (zprof.h): recorded with every capture preset. */
+ZPROF_HOT void zprof_mark(uint8_t id, const char *name, uint32_t value)
+{
+	PUT2(id, 0, PTR(name), value);
 }
 
 ZPROF_HOT void sys_trace_isr_enter(void)

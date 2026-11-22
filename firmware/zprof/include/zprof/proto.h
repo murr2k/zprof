@@ -81,6 +81,12 @@
 
 #define ZPROF_OBJ_ARG(call, phase) (((call) << 4) | (phase))
 
+/* Application markers (zprof.h): the running thread's. Payload: the marker's name
+ * (a string in rodata: the host reads it from the ELF), a value. A STOP with value
+ * 0 means "nothing done this time" (the host makes no job of it). */
+#define ZPROF_EV_MARK_START 0x60
+#define ZPROF_EV_MARK_STOP 0x61
+
 #define ZPROF_EV_THREAD_STATS 0x71 /* thread, execution cycles low, high (the kernel's own count) */
 #define ZPROF_EV_SYNC 0x7E         /* kernel cycles low, high, uptime ms */
 #define ZPROF_EV_OVERFLOW 0x7F     /* arg IPSR; dropped, kernel cycles low, high, current thread */

@@ -179,6 +179,8 @@ select.sel { border: 1px solid var(--line); background: var(--chip); border-radi
 .change { display: flex; align-items: center; gap: 8px; }
 .change b { font-weight: 600; }
 .btn.tiny { padding: 0 6px; font-size: 11px; line-height: 18px; margin-left: auto; }
+.loopbox table { margin-top: 6px; }
+.loopbox td.mono { font-family: ui-monospace, Consolas, monospace; font-size: 11px; white-space: normal; word-break: break-all; }
 .rec-presets { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--dim); }
 table.sortable th { cursor: pointer; user-select: none; }
 table.sortable th:hover { color: var(--text); }

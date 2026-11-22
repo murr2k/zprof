@@ -85,6 +85,10 @@ export interface SchedRow {
   sender: boolean
   /** Seconds into the observation when its longest job ended. */
   c_max_at: number | null
+  /** Its jobs come from the application's marks of this name (zprof.h). */
+  marks: string | null
+  /** Its event loop: where it waits (call site and object), and how often it blocks inside a handler. */
+  loop: SchedLoop | null
   /** The response-time bound; null with bounded false: none (the load can grow without limit). */
   r_us: number | null
   bounded: boolean
@@ -92,6 +96,18 @@ export interface SchedRow {
   status?: 'ok' | 'warn' | 'crit' | 'idle'
   grow_us?: number
   parts?: { c?: number; s?: number; b?: number; q?: number; by?: [string, number][] }
+}
+export interface SchedLoop {
+  /** ao: one wait point, run to completion; ao-inside: one event wait point, blocks inside some
+   * handlers; multi: several wait points (a sequential loop); marked: jobs from application marks. */
+  shape: 'ao' | 'ao-inside' | 'multi' | 'marked'
+  wait_points: number
+  /** Share of its events whose handling blocked on something else. */
+  inside_pct: number
+  /** The firmware sent call sites (else wait points are objects only). */
+  sites: boolean
+  points: [string, number][]
+  inside_by: [string, number][]
 }
 export interface SchedRec { level: 'crit' | 'warn' | 'info'; task: string; title: string; detail: string; advice: string }
 export interface LiveSched {

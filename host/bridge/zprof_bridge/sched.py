@@ -225,6 +225,16 @@ class ThreadJobs:
     release: int | None = None        # a declared release object (its wait queue address)
     release_sym: str | None = None    # or its symbol ("sleep": the thread's k_sleep)
     is_release: dict = field(default_factory=dict)   # wait queue -> matches release_sym
+    # its event loop: every wait point (call site, wait queue or sleep) and how often,
+    # and the ones it reached inside a job (it blocked while handling an event)
+    points: Counter = field(default_factory=Counter)
+    inside: Counter = field(default_factory=Counter)
+    inside_jobs: int = 0
+    j_inside: bool = False
+    mark: str | None = None           # jobs from the application's marks of this name (zprof.h)
+    mark_from: int | None = None      # job accounting: running since (and the interrupt total then)
+    mark_isr: int = 0
+    idle_marks: int = 0               # STOPs with value 0: nothing done, no job
     jobs: int = 0
     discarded: int = 0
     c: deque = field(default_factory=lambda: deque(maxlen=4096))   # net execution, ticks
@@ -273,7 +283,7 @@ class JobTracker:
 
     def __init__(self, hello, threads: dict, horizon_s: float = 1.0, release: dict[int, int] | None = None,
                  irqs: dict | None = None, release_by_name: dict[str, str] | None = None,
-                 thread_name=None, obj_name=None):
+                 thread_name=None, obj_name=None, job_marks: dict[str, str] | None = None, mark_name=None):
         self.hello = hello
         self.threads_tab = threads             # the decoder's thread table (live: kept up to date)
         self.irqs_tab = irqs if irqs is not None else {}
@@ -281,6 +291,10 @@ class JobTracker:
         self.release_by_name = release_by_name or {}
         self.thread_name = thread_name or (lambda p: "")
         self.obj_name = obj_name or (lambda a: None)
+        # jobs from application marks: thread name -> marker name; a marker's name from the ELF
+        self.job_marks = job_marks or {}
+        self.mark_name = mark_name or (lambda a: None)
+        self._marks: dict[int, str | None] = {}
         self.h = int(horizon_s * (hello.ts_hz or 1))
         self.g0 = max(1, int(5e-6 * (hello.ts_hz or 1)))    # the workload grid starts at 5 us
         self.release = release or {}           # thread -> declared release wait queue
@@ -299,9 +313,36 @@ class JobTracker:
     def job(self, ptr: int) -> ThreadJobs:
         j = self.th.get(ptr)
         if j is None:
+            name = self.thread_name(ptr)
             j = self.th[ptr] = ThreadJobs(ptr, Arrivals(self.h), Workload(self.g0), release=self.release.get(ptr),
-                                          release_sym=self.release_by_name.get(self.thread_name(ptr)))
+                                          release_sym=self.release_by_name.get(name), mark=self.job_marks.get(name))
         return j
+
+    def _mark(self, rid: int, t: int, desc: int, value: int) -> None:
+        """An application mark of the running thread: its jobs if its deadline says so."""
+        if self._stack or self.cur is None:
+            return
+        j = self.th.get(self.cur)
+        if j is None or j.mark is None:
+            return
+        name = self._marks.get(desc)
+        if desc not in self._marks:
+            name = self._marks[desc] = self.mark_name(desc)
+        if name != j.mark:
+            return
+        if j.in_job and j.mark_from is not None:     # the work since it last came on the CPU
+            j.jc += max(0, t - j.mark_from - (self.isr_total - j.mark_isr))
+        j.mark_from, j.mark_isr = t, self.isr_total
+        if rid == P.EV_MARK_START:
+            j.in_job, j.rel, j.jc, j.js, j.jinv, j.j_inside = True, t, 0, 0, 0, False
+            j.jinv_by.clear()
+        elif j.in_job:
+            if value:
+                j.arrivals.add(j.rel)
+                self._finish(j, t)
+            else:
+                j.in_job = False
+                j.idle_marks += 1
 
     def is_idle(self, ptr: int) -> bool:
         v = self._idle.get(ptr)
@@ -339,11 +380,12 @@ class JobTracker:
                 self.cur = th
                 j = self.job(th)
                 j.run_from, j.seg_isr = t, self.isr_total
+                j.mark_from, j.mark_isr = t, self.isr_total
                 if j.ready:
                     j.ready = False
                     self.ready.discard(th)
             elif rid == P.EV_SWITCH_OUT:
-                self._out(r.w[0], t, r.arg, r.w[1] if len(r.w) > 1 else 0)
+                self._out(r.w[0], t, r.arg, r.w[1] if len(r.w) > 1 else 0, r.w[2] if len(r.w) > 2 else 0)
             elif rid == P.EV_READY:
                 self._ready(r.w[0], t)
             elif rid == P.EV_ISR_ENTER:
@@ -366,6 +408,8 @@ class JobTracker:
                         self._stack[-1][2] += dt
                     else:
                         self.isr_total += dt
+            elif rid == P.EV_MARK_START or rid == P.EV_MARK_STOP:
+                self._mark(rid, t, r.w[0] if r.w else 0, r.w[1] if len(r.w) > 1 else 0)
             elif rid == P.EV_OVERFLOW:
                 self._gap()
             elif rid == EV_SESSION:
@@ -378,7 +422,7 @@ class JobTracker:
         for j in self.th.values():
             if j.in_job:
                 j.discarded += 1
-            j.in_job, j.blocked, j.ready, j.run_from = False, None, False, None
+            j.in_job, j.blocked, j.ready, j.run_from, j.mark_from = False, None, False, None, None
             j.arrivals.cut()
             j.work.cut()
         for q in self.irqs.values():
@@ -387,14 +431,15 @@ class JobTracker:
         self.ready.clear()
         self._stack.clear()
 
-    def _out(self, th: int, t: int, state: int, wq: int) -> None:
+    def _out(self, th: int, t: int, state: int, wq: int, site: int = 0) -> None:
         j = self.job(th)
         if j.run_from is not None:
             seg = max(0, t - j.run_from - (self.isr_total - j.seg_isr))
             if seg > j.seg_max:
                 j.seg_max, j.seg_max_at = seg, t
-            if j.in_job:
-                j.jc += seg
+            if j.in_job and j.mark_from is not None:
+                # the job's part of this run (a mark can start a job in the middle of one)
+                j.jc += max(0, t - j.mark_from - (self.isr_total - j.mark_isr))
             j.work.add(t - seg, t)
             # inversion: a ready thread of higher priority waited while this one ran, from
             # when it became ready (interrupts in between are not this thread's doing). The
@@ -414,14 +459,20 @@ class JobTracker:
                             wj.jinv += ov
                             wj.jinv_by[th] += ov
             j.run_from = None
+        j.mark_from = None
         if self.cur == th:
             self.cur = None
         if state & BLOCKING and not state & P.THS_QUEUED:
             key = wq if (state & P.THS_PENDING and wq) else (SLEEP_KEY if state & P.THS_SLEEPING else OTHER_KEY)
             j.blocked = (t, key)
             j.blocks += 1
-            if j.in_job and self._ends_job(j, key):
+            point = (site, key)
+            j.points[point] += 1
+            if j.in_job and j.mark is None and self._ends_job(j, key):   # marked jobs end at their mark
                 self._finish(j, t)
+            elif j.in_job:
+                j.inside[point] += 1                 # it waits while handling an event
+                j.j_inside = True
         else:
             self._set_ready(j, t)
 
@@ -438,24 +489,26 @@ class JobTracker:
             j.wait_by_key[key] += t - tb
             if j.in_job:
                 j.js += t - tb
-            else:
+            elif j.mark is None:
                 self._start(j, t)
-        elif not j.in_job:
+        elif not j.in_job and j.mark is None:
             self._start(j, t)
         self._set_ready(j, t)
 
     def _start(self, j: ThreadJobs, t: int) -> None:
-        j.in_job, j.rel, j.jc, j.js, j.jinv = True, t, 0, 0, 0
+        j.in_job, j.rel, j.jc, j.js, j.jinv, j.j_inside = True, t, 0, 0, 0, False
         j.jinv_by.clear()
         if j.blocks > self.WARMUP_BLOCKS:
             j.arrivals.add(t)
 
     def _finish(self, j: ThreadJobs, t: int) -> None:
         j.in_job = False
-        if j.blocks <= self.WARMUP_BLOCKS:
+        if j.mark is None and j.blocks <= self.WARMUP_BLOCKS:   # marked jobs need no warm-up
             return
         r = t - j.rel
         j.jobs += 1
+        if j.j_inside:
+            j.inside_jobs += 1
         j.c.append(j.jc)
         j.r.append(r)
         if j.jc > j.c_max:
@@ -505,6 +558,8 @@ class Task:
     per_period: bool = False      # a job is one declared period's work (no release object)
     c_max_at: float | None = None   # seconds into the observation: its longest job,
     seg_max_at: float | None = None  # and its longest run without a switch
+    marks: str | None = None      # its jobs come from the application's marks of this name
+    loop: dict | None = None      # its event loop's shape (loop_shape)
 
     def own(self, q: int) -> float:
         """Execution of q of its own jobs: the q largest seen (each later one is no
@@ -517,13 +572,49 @@ class Task:
         return sum(top) + (q - len(top)) * top[-1]
 
 
+MIN_WAITS = 20
+
+
+def loop_shape(j: ThreadJobs, obj_name, site_names) -> dict | None:
+    """The shape of a thread's event loop, from where it waited (call site and wait
+    queue, or the queue alone from a firmware without call sites):
+    - "ao": an Active Object's: one wait point, every event run to completion;
+    - "ao-inside": one event wait point, but it blocks while handling some events;
+    - "multi": several wait points, a sequential loop;
+    - "marked": its jobs come from application marks (a time-triggered loop).
+    Wait points under 1 % of its waits are listed, not counted."""
+    total = sum(j.points.values())
+    if total < MIN_WAITS:
+        return None
+    sites = site_names([p[0] for p in j.points if p[0]])
+
+    def label(p) -> str:
+        site, key = p
+        what = "sleep" if key == SLEEP_KEY else "other" if key == OTHER_KEY else (obj_name(key) or f"{key:#010x}")
+        return f"{what} at {sites[site]}" if site and site in sites else what
+    major = [p for p, n in j.points.items() if n >= 0.01 * total]
+    inside_pct = 100 * j.inside_jobs / j.jobs if j.jobs else 0.0
+    top_n = j.points.most_common(1)[0][1]
+    if j.mark is not None:
+        shape = "marked"
+    elif len(major) == 1:
+        shape = "ao-inside" if j.inside_jobs else "ao"
+    elif top_n >= 0.8 * total and j.inside_jobs:
+        shape = "ao-inside"       # one event wait point; the others are waits inside handlers
+    else:
+        shape = "multi"           # several places it waits as it goes round: a sequential loop
+    return {"shape": shape, "wait_points": len(major), "inside_pct": inside_pct, "sites": bool(sites),
+            "points": [[label(p), n] for p, n in j.points.most_common(6)],
+            "inside_by": [[label(p), n] for p, n in j.inside.most_common(3)]}
+
+
 def _p99(xs) -> float:
     s = sorted(xs)
     return s[int(0.99 * (len(s) - 1))] if s else 0.0
 
 
 def build_model(jt: JobTracker, names, deadlines: dict[str, dict] | None = None,
-                irq_name=None) -> list[Task]:
+                irq_name=None, site_names=None) -> list[Task]:
     """Tasks from a JobTracker: threads that completed jobs (not idle), and interrupts."""
     h = jt.hello
     us = 1e6 / (h.ts_hz or 1)
@@ -556,8 +647,19 @@ def build_model(jt: JobTracker, names, deadlines: dict[str, dict] | None = None,
             sender=ptr == h.sender, seg_max=j.seg_max * us,
             c_top=[x * us for x in j.top], work=j.work.curve(us),
             c_max_at=(j.c_max_at - jt.t0) * us / 1e6 if j.c_max_at else None,
-            seg_max_at=(j.seg_max_at - jt.t0) * us / 1e6 if j.seg_max_at else None)
-        if decl and decl.get("period_us"):
+            seg_max_at=(j.seg_max_at - jt.t0) * us / 1e6 if j.seg_max_at else None,
+            loop=loop_shape(j, jt.obj_name, site_names or (lambda pcs: {})))
+        if j.mark is not None and j.jobs:
+            # Jobs from the application's marks (zprof.h): exact. With a declared period
+            # the releases are that period (a frame every refresh); the marks' own
+            # times include the restarts after idle slots, which are not releases.
+            task.marks = j.mark
+            if decl and decl.get("period_us"):
+                T = float(decl["period_us"])
+                task.curve, task.t, task.periodic, task.j = Periodic(T), T, True, 0.0
+                if src is None or src == "period":
+                    task.d, task.d_src = T, src or "period"
+        elif decl and decl.get("period_us"):
             # A loop that waits on more than one thing per cycle (sleeps, a display's
             # refresh) has no release object: a job is one declared period, and its work
             # the most the thread did in any window that long (no less than any cycle's).
@@ -805,7 +907,8 @@ def analyze(tasks: list[Task], th: dict, full: bool = True, overrides: dict | No
             "d_us": t.d, "d_src": t.d_src, "counts": t.counts and t.d is not None, "per_period": t.per_period,
             "jobs": t.jobs, "discarded": t.discarded, "rate_s": t.rate,
             "u_pct": 100 * u / 1e6, "r_meas_us": t.r_meas or None,
-            "r_p99_us": t.r_p99 or None, "sender": t.sender, "c_max_at": t.c_max_at,
+            "r_p99_us": t.r_p99 or None, "sender": t.sender, "c_max_at": t.c_max_at, "marks": t.marks,
+            "loop": t.loop,
             "r_us": None if r is None or r == INF else r, "bounded": r is None or r != INF,
         }
         if t.kind == "thread" and t.d is not None:
@@ -937,6 +1040,31 @@ def recommend(tasks: list[Task], rows: list[dict], out: dict, th: dict) -> list[
                          "detail": "The model misses a cause: interrupts locked, the scheduler locked, or a wait "
                                    "inside the job it counts as the release.",
                          "advice": "Mark the job with zprof markers, or declare its release object in the deadlines file."})
+    # event loops: a handler that blocks is a wait inside a job (self-suspension)
+    seq = []
+    for t in tasks:
+        lp = t.loop
+        if t.kind != "thread" or not lp or lp["shape"] != "ao-inside":
+            continue
+        st = TH.status(th, TH.metric_id("sched", t.name, "inside_pct"), lp["inside_pct"])
+        if st not in ("warn", "crit"):
+            continue
+        on = "; ".join(f"{lab} ({n})" for lab, n in lp["inside_by"])
+        if t.counts:
+            recs.append({"level": st, "task": t.name,
+                         "title": f"{t.name} blocks inside its handler in {lp['inside_pct']:.1f} % of its events",
+                         "detail": f"Waits while handling an event: {on}; worst {t.s:,.0f} us in one job, "
+                                   f"part of its response.",
+                         "advice": "Run each event to completion: post the request and take the answer as a "
+                                   "later event (an Active Object), or shorten what the lock guards."})
+        else:
+            seq.append(f"{t.name} {lp['inside_pct']:.0f} % ({lp['inside_by'][0][0] if lp['inside_by'] else '?'})")
+    if seq:
+        recs.append({"level": "info", "task": "",
+                     "title": f"Event loops that block inside a handler: {', '.join(seq)}",
+                     "detail": "Each waits on something else while handling an event: a self-suspension in its "
+                               "response, and the reason its bound is looser than an Active Object's.",
+                     "advice": "Where it matters, run each event to completion and take the answer as a later event."})
     if close:
         recs.append({"level": "info", "task": "",
                      "title": f"Close to or past their period, with no deadline declared: {', '.join(close)}",
@@ -1004,6 +1132,14 @@ def _us(x) -> str:
     return "" if x is None else (f"{x:,.0f}" if x >= 100 else f"{x:.1f}")
 
 
+def loop_text(lp: dict | None) -> str:
+    if not lp:
+        return ""
+    s, n = lp["shape"], lp["wait_points"]
+    return {"ao": "active object", "ao-inside": f"waits inside {lp['inside_pct']:.1f} %",
+            "multi": f"{n} wait points", "marked": f"marked, {n} wait point{'s' if n != 1 else ''}"}.get(s, s)
+
+
 def sched_report(out: dict) -> str:
     L = []
     sc = out.get("scale")
@@ -1015,7 +1151,7 @@ def sched_report(out: dict) -> str:
              f"{out['u_rm_pct']:.0f} % against the Liu and Layland bound {out['ll_pct']:.0f} %")
     L.append("")
     L.append(f"{'thread':22s} {'prio':>5s} {'kind':5s} {'T us':>8s} {'J':>6s} {'C max':>7s} {'C p99':>7s} "
-             f"{'S':>6s} {'B':>6s} {'D':>7s} {'R bound':>8s} {'R meas':>7s} {'slack':>6s} {'grow':>6s}  jobs")
+             f"{'S':>6s} {'B':>6s} {'D':>7s} {'R bound':>8s} {'R meas':>7s} {'slack':>6s} {'grow':>6s}  jobs  event loop")
     rows = sorted(out["rows"], key=lambda r: (r["kind"] != "thread", r["d_us"] is None, r["prio"]))
     for r in rows:
         if r["kind"] != "thread":
@@ -1025,7 +1161,7 @@ def sched_report(out: dict) -> str:
         L.append(f"{r['name'][:22]:22s} {r['prio']:>5g} {kind:5s} {_us(r['t_us']):>8s} {_us(r['j_us']):>6s} "
                  f"{_us(r['c_us']):>7s} {_us(r['c_p99_us']):>7s} {_us(r['s_us']):>6s} {_us(r['b_us']):>6s} "
                  f"{_us(r['d_us']):>7s} {('none' if not r['bounded'] else _us(r['r_us'])):>8s} "
-                 f"{_us(r['r_meas_us']):>7s} {slack:>6s} {_us(r.get('grow_us')):>6s}  {r['jobs']}"
+                 f"{_us(r['r_meas_us']):>7s} {slack:>6s} {_us(r.get('grow_us')):>6s}  {r['jobs']}  {loop_text(r.get('loop'))}"
                  + ("  (zprof)" if r["sender"] else "") + (f"  [{r['status']}]" if r.get("status") not in (None, "ok") else ""))
     L.append("")
     L.append(f"{'interrupt':36s} {'/s':>7s} {'C max us':>9s} {'U %':>6s}")
@@ -1053,3 +1189,8 @@ def load_deadlines(path: str | Path | None) -> dict[str, dict]:
 
 def releases(deadlines: dict[str, dict]) -> dict[str, str]:
     return {n: d["release"] for n, d in deadlines.items() if d.get("release")}
+
+
+def job_marks(deadlines: dict[str, dict]) -> dict[str, str]:
+    """Threads whose jobs come from application marks: thread name -> marker name."""
+    return {n: d["job"] for n, d in deadlines.items() if d.get("job")}

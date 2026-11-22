@@ -116,6 +116,25 @@ views are still the mockup on synthetic data.
   screen (the NPU and the camera in PSRAM, where its ring is): audio_tid can wait
   that long behind it. The tour itself: 0 dropped frames, 0 audio underruns,
   with the Timing preset streaming. Model and blind spots: `docs/SCHEDULABILITY.md`.
+- The call site of every blocking call: each `*_blocking` hook and the sleep
+  hooks record a return address, and the thread's blocking switch-out carries
+  it (a third word, with every preset). The bridge names it `file.c:123
+  (function)` through inlined calls (`addr2line -i` from the Zephyr SDK when
+  found, `ZPROF_ADDR2LINE` to name one; else the DWARF line table). Zephyr
+  fires some blocking hooks before it checks for `K_NO_WAIT`: those calls now
+  record neither a site nor a BLOCK record (they were counted as blocks).
+- Event loops in the Schedulability view: each thread's shape (active object:
+  one wait point, every event run to completion; one event wait point that
+  blocks inside N % of its handlers; a sequential loop of N wait points;
+  marked), an *Event loop* column, the selected thread's wait points with
+  their source lines in the side panel, and recommendations for handlers that
+  block (`sched.*.inside_pct`).
+- Application marks (`zprof.h`): `ZPROF_MARK_START(name)` and
+  `ZPROF_MARK_STOP(name, value)`, one record each, with every preset. A
+  deadlines entry `"job": "frame"` takes the thread's jobs from them (STOP with
+  0: no job). The demo marks its frames (branch `zprof-integration`): main's
+  frame on Home measured 6.3 ms of work and a bound of 11.3 ms against 16.7 ms
+  (32 % slack), where one period's work (15.6 ms) had said it could miss.
 - Capture presets chosen from the page (the header's *recording* control):
   Scheduling (no kernel-object events), Timing (mutexes), Kernel objects (all).
   The target takes a CT_CLASSES control frame and answers with what it records;

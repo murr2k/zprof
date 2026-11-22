@@ -168,6 +168,89 @@ def _trace() -> Decoder:
     return d
 
 
+def test_jobs_from_marks() -> None:
+    """A (the UI loop) marks frames: STOP(1) at a hand-over, START right after; an idle
+    slot ends with STOP(0). One frame waits 2 ms inside (a DMA)."""
+    e = Enc()
+    e.hello()
+    us = HZ // 1_000_000
+    r = Enc.rec
+    FRAME = 0x70001000
+    tr = Enc.sync(0) + r(0, P.EV_SWITCH_OUT, P.THS_PENDING, SENDER, 0x34020000) + r(0, P.EV_SWITCH_IN, 0, A)
+    tr += r(0, P.EV_MARK_START, 0, FRAME, 0)
+    t = 0
+    for k in range(30):
+        if k % 3 == 2:                                              # an idle slot: 300 us of work, sleep
+            tr += r(t + 300 * us, P.EV_MARK_STOP, 0, FRAME, 0)
+            tr += r(t + 300 * us, P.EV_SWITCH_OUT, P.THS_SLEEPING, A, 0)
+            tr += r(t + 4300 * us, P.EV_READY, 0, A) + r(t + 4300 * us, P.EV_SWITCH_IN, 0, A)
+            t += 4300 * us
+            tr += r(t, P.EV_MARK_START, 0, FRAME, 0)
+            continue
+        work = 9000 if k == 4 else 5000
+        if k == 7:                                                  # waits 2 ms inside the frame
+            tr += r(t + 1000 * us, P.EV_SWITCH_OUT, P.THS_PENDING, A, 0x34010040)
+            tr += r(t + 3000 * us, P.EV_READY, 0, A) + r(t + 3000 * us, P.EV_SWITCH_IN, 0, A)
+            t += 2000 * us
+        tr += r(t + work * us, P.EV_MARK_STOP, 0, FRAME, 1)           # handed over
+        tr += r(t + work * us, P.EV_SWITCH_OUT, P.THS_SLEEPING, A, 0)  # present() waits for the blanking
+        t += 16_667 * us
+        tr += r(t, P.EV_READY, 0, A) + r(t, P.EV_SWITCH_IN, 0, A) + r(t, P.EV_MARK_START, 0, FRAME, 0)
+    e.frame(P.CH_TRACE, tr)
+    d = Decoder()
+    d.feed(bytes(e.out))
+    names = {A: "main", B: "worker", SENDER: "zprof_sender"}
+    jt = JobTracker(d.hello, d.threads, thread_name=lambda p: names.get(p, ""), job_marks={"main": "frame"},
+                    mark_name=lambda a: "frame" if a == FRAME else None)
+    jt.feed(d.records)
+    j = jt.th[A]
+    assert j.jobs == 20 and j.idle_marks == 10          # idle slots make no jobs
+    assert j.c_max == 9000 * us                          # the heavy frame, nothing of the idle slot before it
+    assert j.s_max == 2000 * us and j.r_max == 9000 * us
+    dl = {"main": {"deadline_us": 16667, "period_us": 16667, "job": "frame"}}
+    m = next(x for x in build_model(jt, lambda p: names.get(p, hex(p)), dl) if x.name == "main")
+    assert m.marks == "frame" and not m.per_period and m.periodic and m.t == 16667 and abs(m.c - 9000) < 1
+    out = analyze([m], TH.load())
+    assert out["rows"][0]["r_us"] == 9000 + 2000       # own work and the wait inside
+
+
+def test_event_loop_shapes_from_call_sites() -> None:
+    """A waits for its events at one call site and, in one event of ten, on a mutex
+    inside the handler; B sleeps at two places in turn (a sequential loop)."""
+    from zprof_bridge.sched import loop_shape
+    e = Enc()
+    e.hello()
+    us = HZ // 1_000_000
+    r = Enc.rec
+    SEM, MTX, S1, S2, S3, S4 = 0x34010000, 0x34010100, 0x70002001, 0x70002101, 0x70003001, 0x70003101
+    tr = Enc.sync(0) + r(0, P.EV_SWITCH_OUT, P.THS_PENDING, SENDER, 0x34020000)
+    t = 0
+    for k in range(60):
+        tr += r(t, P.EV_READY, 0, A) + r(t, P.EV_SWITCH_IN, 0, A)
+        if k % 10 == 3:
+            tr += r(t + 10 * us, P.EV_SWITCH_OUT, P.THS_PENDING, A, MTX, S2)      # waits inside the handler
+            tr += r(t + 30 * us, P.EV_READY, 0, A) + r(t + 30 * us, P.EV_SWITCH_IN, 0, A)
+        tr += r(t + 50 * us, P.EV_SWITCH_OUT, P.THS_PENDING, A, SEM, S1)          # back to its one event wait
+        tr += r(t + 60 * us, P.EV_READY, 0, B) + r(t + 60 * us, P.EV_SWITCH_IN, 5, B)
+        tr += r(t + 80 * us, P.EV_SWITCH_OUT, P.THS_SLEEPING, B, 0, S3 if k % 2 else S4)
+        t += 1000 * us
+    e.frame(P.CH_TRACE, tr)
+    d = Decoder()
+    d.feed(bytes(e.out))
+    jt = JobTracker(d.hello, d.threads, thread_name=lambda p: {A: "main", B: "worker"}.get(p, ""))
+    jt.feed(d.records)
+    names = {S1: "a.c:10 (a)", S2: "a.c:20 (a)", S3: "b.c:30 (b)", S4: "b.c:40 (b)"}
+
+    def sites(pcs):
+        return {p: names[p] for p in pcs}
+    obj = {SEM: "events", MTX: "lock"}.get
+    a = loop_shape(jt.th[A], obj, sites)
+    assert a["shape"] == "ao-inside" and abs(a["inside_pct"] - 10) < 2.5
+    assert a["points"][0][0] == "events at a.c:10 (a)" and a["inside_by"][0][0] == "lock at a.c:20 (a)"
+    b = loop_shape(jt.th[B], obj, sites)
+    assert b["shape"] == "multi" and b["wait_points"] == 2
+
+
 def test_jobs_from_a_trace() -> None:
     d = _trace()
     jt = JobTracker(d.hello, d.threads, irqs=d.irqs)

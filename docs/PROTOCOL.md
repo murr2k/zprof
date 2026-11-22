@@ -50,7 +50,7 @@ target addresses; the host names them from the ELF.
 | Id | Record | arg | Payload |
 |---|---|---|---|
 | 0x01 | SWITCH_IN | priority | thread |
-| 0x02 | SWITCH_OUT | thread state: Zephyr's bits (`ZPROF_THS_*`: pending 0x02, sleeping 0x04, suspended 0x10, queued 0x80 = still ready, preempted) | thread, the wait queue it pends on (0 if none): the switch reason |
+| 0x02 | SWITCH_OUT | thread state: Zephyr's bits (`ZPROF_THS_*`: pending 0x02, sleeping 0x04, suspended 0x10, queued 0x80 = still ready, preempted) | thread, the wait queue it pends on (0 if none): the switch reason; when it blocks, a third word: the call site of the blocking call (a return address in the application's code: every `*_blocking` hook and the sleep hooks record it, whatever the preset; absent when another thread blocked in between, or when the switch-out came more than 200 us after the hook: a hook whose call did not block must not name the thread's next wait) |
 | 0x03 | ISR_ENTER | IRQ number (IPSR - 16), or 0x8000 + exception number for system exceptions | |
 | 0x04 | ISR_EXIT | as ISR_ENTER | |
 | 0x05 | IDLE | | [64-bit kernel cycles, if the timestamp stops in sleep] |
@@ -62,8 +62,8 @@ target addresses; the host names them from the ELF.
 | 0x0B | ABORT | | thread |
 | 0x0C | NAME | | thread (the name follows on channel 0, from the sender thread) |
 | 0x10-0x17 | kernel objects: SEM, MUTEX, MSGQ, QUEUE (k_queue, k_fifo, k_lifo), SLEEP, POLL, TIMER, WORK | call << 4 \| phase (ENTER 1, BLOCK 2, EXIT 3) | object, value. Calls that may block (sem take, mutex lock, msgq put and get, queue get) have no ENTER: one EXIT (the return code) when they do not block, BLOCK (the timeout in ticks, 0xFFFFFFFF forever; for a mutex its owner) then EXIT when they do (the wait is BLOCK to EXIT). A sem give (value: the count after) and a mutex unlock: EXIT only. Other calls: ENTER with their input (a queue put's "allocated", a sleep's time), EXIT where it means something (sleep, poll, timer expiry); work items carry their handler; SLEEP has object 0 (the thread). Calls are numbered per class (`ZPROF_CALL_*`). Not recorded from the zprof sender itself (its sends would trace themselves); a run-time mask of classes (hello tag 10) |
-| 0x60 | MARK_START | | descriptor (rodata pointer), value |
-| 0x61 | MARK_STOP | | descriptor, value |
+| 0x60 | MARK_START | | the marker's name (a string literal in rodata: the host reads it from the ELF), value; the running thread's (`zprof.h`: `ZPROF_MARK_START("frame")`) |
+| 0x61 | MARK_STOP | | name, value: 0 means nothing was done this time (no job), anything else completes the job (`ZPROF_MARK_STOP("frame", 1)`) |
 | 0x62 | PLOT | | descriptor, value |
 | 0x63 | PRINT | | format (rodata pointer), arguments |
 | 0x70 | METRIC | metric id | value |

@@ -32,7 +32,7 @@ from .analyze import CALL_NAMES, CLASS_NAMES, EXC_NAMES, ISR_CTX, Tracker, short
 from .elf import Elf
 from . import thresholds as TH
 from .presets import ALL, BY_ID, PRESETS, classes_frame, preset_of
-from .sched import JobTracker, analyze, build_model, releases
+from .sched import JobTracker, analyze, build_model, job_marks, releases
 from .stream import Decoder
 
 RETAIN_MS = 12_000
@@ -143,7 +143,9 @@ class LiveSession:
         self.jt = JobTracker(self.d.hello, self.d.threads, irqs=self.d.irqs,
                              release_by_name=releases(self.deadlines),
                              thread_name=lambda p: self.name(("t", p)),
-                             obj_name=lambda a: self.elf.name(a) if self.elf else None)
+                             obj_name=lambda a: self.elf.name(a) if self.elf else None,
+                             job_marks=job_marks(self.deadlines),
+                             mark_name=lambda a: self.elf.string(a) if self.elf else None)
 
     def sched_model(self) -> tuple[list, dict] | None:
         """The task model as it stands, and what it was observed over (cheap: the
@@ -152,7 +154,8 @@ class LiveSession:
         if jt is None or jt.t0 is None:
             return None
         tasks = build_model(jt, lambda p: self.name(("t", p)), self.deadlines,
-                            irq_name=lambda i: self.name(("i", i)))
+                            irq_name=lambda i: self.name(("i", i)),
+                            site_names=self.elf.call_sites if self.elf else None)
         meta = {"observed_s": (jt.t1 - jt.t0) / (self.d.hello.ts_hz or 1), "gaps": jt.gaps}
         self.sched_tasks, self.sched_meta = tasks, meta
         return tasks, meta
