@@ -445,8 +445,10 @@ class LiveSession:
         for up, reason, name in h.fault_log:
             f = full.get(up)
             where = (self.elf.name(f.pc & ~1) if self.elf and f else None) or (f"{f.pc:#010x}" if f else "")
+            long = fault.REASONS.get(reason, f"reason {reason}")
             rows.append({"t_s": up / 1000, "thread": name or "(interrupt)",
-                         "reason": fault.REASONS.get(reason, f"reason {reason}"), "where": where})
+                         # the pane is narrow: "divide by zero", not "UsageFault: divide by zero"
+                         "reason": long.split(": ", 1)[-1], "where": where})
         return {"count": h.fault_count, "rows": rows}
 
     def _pmu_figs(self, prev: dict, now: dict, p: int, run: int) -> dict | None:

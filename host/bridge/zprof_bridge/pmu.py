@@ -73,7 +73,7 @@ def figures(events: tuple[int, ...], counts: list[int], run_cycles: int) -> dict
     return out
 
 
-SHORT = {"instructions": "inst", "icache_refills": "I$ refill", "dcache_refills": "D$ refill",
+SHORT = {"instructions": "inst", "icache_refills": "I$", "dcache_refills": "D$",
          "dcache_accesses": "D$ access", "dcache_read_misses": "D$ rd miss", "mem_accesses": "mem acc",
          "bus_accesses": "bus acc", "exceptions": "exc", "cycles": "cycles",
          "frontend_stall_cycles": "FE stall", "backend_stall_cycles": "BE stall", "stall_cycles": "stall",

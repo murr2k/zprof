@@ -8,6 +8,14 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+### Changed
+
+- Live target: the Threads table is wider (the CPU chart narrower), and with
+  per-thread PMU figures it folds the wake latencies into one column and
+  leaves out net % (the KPI strip has the interrupt share), so IPC, I$/ki,
+  D$/ki and stall share fit without scrolling sideways. The Faults pane shows
+  short reasons ("divide by zero"), leaving room for the function.
+
 ## [0.6.0] - 2026-11-22
 
 ### Added

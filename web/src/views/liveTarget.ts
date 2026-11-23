@@ -103,6 +103,8 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
   const [bad] = t.examples.badGoodColorPalette
   const dash = sferic().Dashboard({ container: host, theme: t, numberOfColumns: 4, numberOfRows: 4, splitterThickness: 4 })
   dash.setRowHeight(0, 0.62).setRowHeight(1, 2.0).setRowHeight(2, 1.35).setRowHeight(3, 1.0)
+  // the CPU chart (column 0) gives width to the Threads table (1 and 2): its PMU figures
+  dash.setColumnWidth(0, 0.75).setColumnWidth(1, 1.15).setColumnWidth(2, 1.15).setColumnWidth(3, 0.95)
   const kpi = dash.createPanel(KpiStrip, { columnIndex: 0, rowIndex: 0, columnSpan: 4 })
 
   // ---------------------------------------------------------------- timeline
@@ -241,7 +243,7 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
   chrome()
 
   // ---------------------------------------------------------------- CPU by thread
-  const cpu = dash.createChartXY({ columnIndex: 0, rowIndex: 2, columnSpan: 2, legend: { visible: true, position: 'right' } })
+  const cpu = dash.createChartXY({ columnIndex: 0, rowIndex: 2, legend: { visible: true, position: 'right' } })
     .setTitle('CPU by thread, per second (interrupts at the bottom)').setTitleFont((f) => f.setSize(13))
   cpu.axisX.setTickStrategy(AxisTickStrategies.Time).setScrollStrategy(AxisScrollStrategies.scrolling)
     .setDefaultInterval((s) => ({ end: s.dataMax ?? 0, start: (s.dataMax ?? 0) - HISTORY_S * 1000, stopAxisAfter: false }))
@@ -264,7 +266,8 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
   const colorByName = new Map(h.lanes.map((ln, i) => [ln.name, laneColor[i]]))
 
   // ---------------------------------------------------------------- tables
-  const tgrid = dataTable(dash, { columnIndex: 2, rowIndex: 2 }).setTitle('Threads, last second').setTitleFont((f) => f.setSize(13))
+  // two columns wide: room for the PMU figures (IPC, refills, stalls) with --pmu-threads
+  const tgrid = dataTable(dash, { columnIndex: 1, rowIndex: 2, columnSpan: 2 }).setTitle('Threads, last second').setTitleFont((f) => f.setSize(13))
   tgrid.setCellChangeHighlight(false)
   const igrid = dataTable(dash, { columnIndex: 3, rowIndex: 2 }).setTitle('Interrupts, last second').setTitleFont((f) => f.setSize(13))
   igrid.setCellChangeHighlight(false)
@@ -322,11 +325,19 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
     // PMU figures per thread (IPC, misses per 1000 instructions, stall share) when the
     // bridge asked for a PMU record at every switch (serve --pmu-threads)
     const pcols = s.pmu_cols ?? []
-    const head = ['Thread', 'Prio', 'CPU %', 'net %', 'In/s', 'Wake us', 'p99', 'max', ...pcols.map((c) => c[1])]
+    // with PMU figures the wake latencies share one column (mean / p99 / max) and net %
+    // (CPU % less interrupts: the KPI strip has the interrupt share) goes, so the table
+    // fits without scrolling sideways
+    const pmuOn = pcols.length > 0
+    const wakeHead = pmuOn ? ['Wake us (p99, max)'] : ['Wake us', 'p99', 'max']
+    const head = ['Thread', 'Prio', 'CPU %', ...(pmuOn ? [] : ['net %']), 'In/s', ...wakeHead, ...pcols.map((c) => c[1])]
     const rows: CellContent[][] = s.threads.filter((r) => r.cpu_pct > 0 || r.switches_s > 0).map((r) => [
       r.sender ? `${r.name} (zprof)` : r.name, r.prio === null ? '' : String(r.prio),
       { value: r.cpu_pct, text: r.cpu_pct.toFixed(2), bar: r.cpu_pct, barMin: 0, barMax: 100, barColor: (colorByName.get(r.name) ?? t.uiText).setA(255) },
-      r.net_pct.toFixed(2), r.switches_s.toFixed(0), us(r.wake_mean_us), us(r.wake_p99_us), us(r.wake_max_us),
+      ...(pmuOn ? [] : [r.net_pct.toFixed(2)]), r.switches_s.toFixed(0),
+      ...(pcols.length
+        ? [r.wake_mean_us === null ? '' : `${us(r.wake_mean_us)} (${us(r.wake_p99_us)}, ${us(r.wake_max_us)})`]
+        : [us(r.wake_mean_us), us(r.wake_p99_us), us(r.wake_max_us)]),
       ...pcols.map(([k]) => {
         const v = r.pmu?.[k]
         return v === undefined ? '' : v.toFixed(k === 'ipc' ? 2 : 1)
