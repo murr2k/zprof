@@ -8,6 +8,22 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+## [0.4.1] - 2026-11-22
+
+### Added
+
+- `CONFIG_ZPROF_RING_DTCM`, on by default where the board chooses a
+  `zephyr,dtcm`: the event ring and its state go in the core's data TCM
+  (Zephyr's `.dtcm_bss`, zeroed at boot, which also gives a TCM with ECC its
+  first writes). Only the CPU touches the ring; the network stack copies out
+  of it. On the STM32N6570-DK (the demo declares the M55's 128 KB DTCM, which
+  Zephyr v4.4.0's devicetree lacks; it is enabled at reset, ECC on): internal
+  RAM free went from 58 to 122 KB, zprof's whole cost there is now 7 KB, the
+  hook cost is unchanged (170 ns against 171: the ring's writes already hit
+  the data cache), the P3 exit check passes with 0 records lost, and full
+  tours with no client and with a recording streaming show 0 dropped frames
+  and 0 audio underruns.
+
 ## [0.4.0] - 2026-11-22
 
 The scope-like trigger on the live timeline, and the stm32n6-demo's release
@@ -392,7 +408,8 @@ visualizations, an intelligence layer, and a safe write path to the target.
 - Thresholds file with JSON Schema: live alarms, run pass criteria, build gate.
 - Zephyr `main` pinned by SHA in `firmware/west.yml`.
 
-[Unreleased]: https://github.com/murr2k/zprof/compare/v0.4.0...HEAD
+[Unreleased]: https://github.com/murr2k/zprof/compare/v0.4.1...HEAD
+[0.4.1]: https://github.com/murr2k/zprof/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/murr2k/zprof/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/murr2k/zprof/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/murr2k/zprof/releases/tag/v0.2.0

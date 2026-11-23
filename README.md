@@ -9,7 +9,7 @@ serves a GPU dashboard built on [Sferic](https://github.com/murr2k/sferic-charts
 
 ![Live target: scheduler timeline, CPU by thread, interrupts and kernel objects of the STM32N6570-DK demo](docs/img/live-target.jpg)
 
-**Status (v0.4.0).** Tested on one target: the
+**Status (v0.4.1).** Tested on one target: the
 STM32N6570-DK (Cortex-M55 at 800 MHz) running Zephyr v4.4.0 and the
 [stm32n6-demo](https://github.com/murr2k/stm32n6-demo) (60 Hz LVGL display,
 2.7 ms audio refills, NPU, camera, H.264 encoder, Ethernet services). The
@@ -37,7 +37,7 @@ the STM32N6570-DK demo.
 | Capture-then-upload | A window with no trace traffic on the network at all, for the cases where streaming would disturb the measurement | 4 MB, 8 s of the attract lap with two 1.5 MB screenshots sent meanwhile: no record lost |
 | Recordings, a replay-equals-live check, Perfetto export | Regression evidence: compare builds run against run, and share a trace | 481,881 records decoded identically in different pieces |
 | A link that recovers by itself | Cable pulls, resets and reflashes need no restart of anything | Streaming resumed 0.5 s after a 4 s carrier drop, 0 records lost |
-| Names from the ELF, checked against a build id | No strings on the target, and a trace analysed against the wrong build is flagged | About 8 KB of flash and 72 KB of internal RAM (64 KB of it the ring) |
+| Names from the ELF, checked against a build id | No strings on the target, and a trace analysed against the wrong build is flagged | About 10 KB of flash and 7 KB of internal RAM; the 64 KB ring in the M55's DTCM |
 | A browser dashboard, Apache-2.0 | Nothing to license, and a page anyone on the team can open | The screenshots in this README, taken from the board live |
 
 ### What it found in a demo that already passed its tests
@@ -128,7 +128,7 @@ lap) with zprof streaming.
 | A hook | 159 to 171 ns (measured by the target at every connection, shown on the page) |
 | Event rate | 9,800, 10,600 and 15,700 events a second on the Home screen with the Scheduling, Timing and Kernel objects presets; bursts to 130,000 a second during a 1.5 MB network transfer |
 | zprof's own CPU | 1.15, 1.30 and 1.96 % on Home with those presets (sender time plus events times the hook cost); 2 to 3.7 % with kernel objects through a whole tour |
-| Footprint | About 8 KB of flash and 72 KB of internal RAM (64 KB of it the ring); the capture buffer (4 MB of PSRAM on the demo) is taken at the first capture |
+| Footprint | About 10 KB of flash and 7 KB of internal RAM, the 64 KB ring in the core's DTCM (`ZPROF_RING_DTCM`, on where the board chooses `zephyr,dtcm`; in internal RAM otherwise); the capture buffer (4 MB of PSRAM on the demo) is taken at the first capture |
 | Agreement | Per-thread CPU within 0.03 points of the kernel's own counts; frame marks equal the demo's frame counter; audio refill wakeups 22,300 of the DAC's 22,300 blocks; the least plotted frame margin equals the demo's own at all 560 heartbeats (`integrations/stm32n6-demo/p3check.py`) |
 | Capture | 4 MB held 8 s of the attract lap with two 1.5 MB screenshots sent meanwhile: no record lost inside the window |
 
@@ -202,7 +202,7 @@ the ELF of the build that made it: the bridge checks a build id.
 
 Node.js 20 or newer and a browser with WebGL2 on a GPU (tested with Chrome).
 The dashboard imports Sferic from source, checked out beside this repository
-as `lightning` (zprof 0.4.0 is tested with Sferic's `main` at d115deb, the
+as `lightning` (zprof 0.4.1 is tested with Sferic's `main` at d115deb, the
 first commit with the sortable tables it needs):
 
 ```powershell

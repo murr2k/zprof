@@ -40,7 +40,13 @@ BUILD_ASSERT((ZPROF_RING_WORDS & MASK) == 0, "CONFIG_ZPROF_RING_SIZE must be a p
 BUILD_ASSERT(!IS_ENABLED(CONFIG_ZERO_LATENCY_IRQS),
 	     "zero-latency interrupts would run past the ring's lock");
 
+#ifdef CONFIG_ZPROF_RING_DTCM
+/* In the core's DTCM (the board's zephyr,dtcm): Zephyr zeroes .dtcm_bss at boot,
+ * which also gives a TCM with ECC its first writes. */
+struct zprof_ring zprof_ring __dtcm_bss_section;
+#else
 struct zprof_ring zprof_ring;
+#endif
 
 static ALWAYS_INLINE uint32_t ts_now(void)
 {

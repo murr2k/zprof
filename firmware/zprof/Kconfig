@@ -27,10 +27,25 @@ config ZPROF_RING_SIZE
 	int "Event ring, bytes (a power of two)"
 	default 32768
 	help
-	  In internal RAM: the hooks write it from interrupts and the
-	  context switch, where a cache miss to external RAM would add
-	  hundreds of cycles of jitter. At 30 to 40 thousand events a second
-	  32 KB covers about 80 to 100 ms of a sender that cannot run.
+	  In internal RAM (or the core's DTCM, ZPROF_RING_DTCM): the hooks
+	  write it from interrupts and the context switch, where a cache miss
+	  to external RAM would add hundreds of cycles of jitter. At 30 to 40
+	  thousand events a second 32 KB covers about 80 to 100 ms of a sender
+	  that cannot run.
+
+DT_CHOSEN_Z_DTCM := zephyr,dtcm
+
+config ZPROF_RING_DTCM
+	bool "Event ring in the core's DTCM"
+	default y
+	depends on $(dt_chosen_enabled,$(DT_CHOSEN_Z_DTCM))
+	help
+	  Place the ring and its state in the data TCM the board chooses as
+	  zephyr,dtcm (Zephyr's .dtcm_bss, zeroed at boot): single-cycle and
+	  uncached, written on the hottest path in the system, and out of the
+	  general RAM budget. Only the CPU touches the ring (the network stack
+	  copies out of it), so a TCM that other bus masters cannot reach is
+	  fine.
 
 choice ZPROF_TS
 	prompt "Timestamp source"
