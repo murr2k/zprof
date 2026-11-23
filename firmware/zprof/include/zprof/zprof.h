@@ -55,6 +55,25 @@ void zprof_plot(const char *name, int32_t value);
 void zprof_print(const char *fmt, uint32_t a0, uint32_t a1, uint32_t a2);
 void zprof_trigger(uint32_t why);
 
+#ifdef CONFIG_ZPROF_FAULT
+/* Faults zprof's handler captured since boot (a thread it ended, the board running
+ * on): for an application's own alarm. */
+struct zprof_fault_info {
+	uint32_t uptime_ms;  /* when */
+	uint32_t reason;     /* K_ERR_* */
+	char thread[16];     /* the thread's name ("" in an interrupt) */
+};
+/* The newest first, up to n of the last four; returns how many since boot. */
+int zprof_faults(struct zprof_fault_info *out, int n);
+/* A short name for a reason: "divide by zero", "bus fault", "oops". */
+const char *zprof_fault_reason(uint32_t reason);
+/* From the application's own k_sys_fatal_error_handler: keep the fault for zprof
+ * (registers, call trace, the trace and the flight recorder), then go on with the
+ * application's own policy. Not needed with CONFIG_ZPROF_FAULT_HANDLER. */
+struct arch_esf;
+void zprof_fault_capture(unsigned int reason, const struct arch_esf *esf);
+#endif
+
 #define ZPROF_MARK_START(name)       zprof_mark(ZPROF_EV_MARK_START, "" name, 0)
 #define ZPROF_MARK_STOP(name, value) zprof_mark(ZPROF_EV_MARK_STOP, "" name, (uint32_t)(value))
 #define ZPROF_PLOT(name, value)      zprof_plot("" name, (int32_t)(value))

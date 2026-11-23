@@ -41,6 +41,13 @@ extern struct k_thread *volatile zprof_self;
 void zprof_put(uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0, uint32_t a1, uint32_t a2,
 	       uint32_t a3);
 
+/* A record of up to 15 payload words from an array (not for the hooks' path). */
+void zprof_put_n(uint8_t id, uint16_t arg, uint32_t nw, const uint32_t *p);
+
+/* The protocol analyzer (bus.c): the buses recorded now, and those built in. */
+extern volatile uint32_t zprof_proto;
+extern const uint32_t zprof_proto_avail;
+
 /* A SYNC record: the timestamp and the 64-bit kernel cycle count read together. */
 void zprof_sync(void);
 
@@ -70,6 +77,45 @@ void zprof_recorder_set(uint32_t post_ms);
 void zprof_recorder_resume(void);
 /* A session took the held recording: armed again. */
 void zprof_recorder_taken(void);
+
+/* The last fault (fault.c, CONFIG_ZPROF_FAULT): HT_FAULT's 48 words, in this order. */
+struct zprof_fault {
+	uint32_t magic;          /* ZPROF_FAULT_MAGIC */
+	uint32_t words;          /* 48 */
+	uint32_t build_id[4];
+	uint32_t uptime_ms;
+	uint32_t reason;         /* K_ERR_* */
+	uint32_t flags;          /* ZPROF_FAULT_F_* */
+	uint32_t thread;
+	char name[16];
+	uint32_t r[8];           /* r0-r3, r12, lr, pc, xpsr as stacked */
+	uint32_t callee[9];      /* r4-r11, psp */
+	uint32_t msp, exc_return;
+	uint32_t hfsr, mmfar, bfar, sfar;
+	uint32_t nframes;
+	uint32_t frames[8];      /* return addresses, the faulting pc first */
+	uint32_t ts;             /* the trace's timestamp at the fault */
+	uint32_t crc;            /* crc32_ieee of the words before */
+};
+extern struct zprof_fault zprof_fault;
+extern volatile bool zprof_fault_new;
+/* A fault: an armed flight recorder freezes now, without its post time. */
+void zprof_recorder_fault(void);
+
+/* The PMU (pmu.c, CONFIG_ZPROF_PMU): four chained counts. */
+#define ZPROF_PMU_N 4
+struct zprof_pmu {
+	uint16_t ev[ZPROF_PMU_N];  /* Arm PMU event numbers counted */
+	volatile uint32_t flags;   /* ZPROF_PMU_F_* */
+};
+extern struct zprof_pmu zprof_pmu;
+/* A PMU record of this kind (ZPROF_PMU_*), if a session or the recorder records. */
+void zprof_pmu_put(uint16_t kind);
+/* New events (0xFFFF: keep) and flags: the counters restart, a BASE record follows. */
+void zprof_pmu_set(const uint16_t ev[ZPROF_PMU_N], uint32_t flags);
+/* The events and flags a session starts with. */
+void zprof_pmu_defaults(void);
+uint32_t zprof_pmu_auth(void);
 
 uint32_t zprof_ts_hz(void);
 

@@ -43,6 +43,119 @@ config ZPROF_RECORDER_POST_MS
 	  run time too (zprof_bridge recorder arm). The history it keeps is
 	  the ring's size at the event rate (64 KB: a fraction of a second).
 
+config ZPROF_PMU
+	bool "The CPU's PMU counts (Armv8.1-M)"
+	depends on CPU_CORTEX_M55 || CPU_CORTEX_M85
+	help
+	  Off unless chosen: zprof takes the PMU over (its event types and
+	  counters), which an application that uses the PMU itself would
+	  find changed.
+	  Four 32-bit counts from the M-profile PMU (each a chained pair of
+	  its 16-bit event counters): instructions, instruction- and
+	  data-cache refills and back-end stall cycles unless a host picks
+	  other events (CT_PMU). A PMU record at every heartbeat, and with
+	  per-thread counts on, after every thread switch (eight register
+	  reads and a 24-byte record each).
+
+config ZPROF_PMU_SWITCH
+	bool "PMU counts at every thread switch from the start of a session"
+	depends on ZPROF_PMU
+	help
+	  Per-thread counts without the host asking. A host turns them on
+	  and off at run time either way.
+
+config ZPROF_FAULT
+	bool "Fault records (zprof_fault_capture)"
+	depends on CPU_CORTEX_M
+	help
+	  Off unless chosen. zprof_fault_capture(), called from a fatal
+	  error handler, keeps the fault (registers, the thread, a call
+	  trace of return addresses), puts it in the trace, freezes an armed
+	  flight recorder and hands the record to the clients. An
+	  application with its own k_sys_fatal_error_handler calls it there
+	  and keeps its own policy. Best with EXTRA_EXCEPTION_INFO and
+	  ARCH_STACKWALK (callee-saved registers, the call trace).
+
+config ZPROF_FAULT_HANDLER
+	bool "zprof supplies k_sys_fatal_error_handler"
+	depends on ZPROF_FAULT
+	help
+	  Off unless chosen: adding zprof never changes how a device fails.
+	  On, zprof's handler captures the fault and halts as Zephyr's own
+	  does (or runs on, ZPROF_FAULT_CONTINUE). It clashes at link time
+	  with an application's own handler.
+
+config ZPROF_FAULT_CONTINUE
+	bool "After a fault in a thread that is not essential, run on"
+	depends on ZPROF_FAULT_HANDLER
+	help
+	  Off unless chosen. zprof's handler returns and the kernel ends
+	  only the faulting thread, so the device stays up to report it; a
+	  fault in an interrupt, an essential thread (main, idle) or a panic
+	  still halts. A thread ended this way may leave what it held (a
+	  mutex, a buffer) held for good, and the rest of the system runs
+	  without it. Neither halting nor running on is safe for every
+	  system (a halted CPU can leave a power stage's switch on; running
+	  on can leave a control loop dead): choose it for this product,
+	  with the safety net in hardware (a watchdog, a timer's break
+	  input).
+
+config ZPROF_BUS
+	bool "The protocol analyzer: Ethernet frames, I2C messages, disk transfers"
+	help
+	  Off unless chosen: nothing is rerouted through zprof unless the
+	  build asks. Records of bus traffic, each kind only while a host
+	  asks for it (CT_PROTO; every session starts with none): I2C
+	  messages and disk transfers (their timing, not their data unless
+	  ZPROF_BUS_I2C_DATA), and Ethernet frames (their first 56 bytes,
+	  zprof's own stream left out) where the build also opts in. The
+	  driver-specific options wrap the driver's function at link time.
+	  zprof's port has no login: whoever reaches it can switch on what
+	  is built in.
+
+if ZPROF_BUS
+
+config ZPROF_BUS_ETH_RX
+	bool "Received Ethernet frames (net_recv_data): opt in"
+	depends on NETWORKING
+	help
+	  Off unless chosen. The frames' headers name every host the target
+	  talks to (MAC and IP addresses, ports), and zprof's port has no
+	  login: with this built in, any machine that can reach the port can
+	  turn it on and read the target's traffic headers. Build it in only
+	  where that is acceptable (a development network, not inside a
+	  secure perimeter), and keep its captures private.
+
+config ZPROF_BUS_ETH_STM32_TX
+	bool "Transmitted Ethernet frames (wraps the STM32 driver's eth_stm32_tx): opt in"
+	depends on ETH_STM32_HAL && !ETH_STM32_HAL_TX_ASYNC
+	help
+	  Off unless chosen, for the reasons given for ZPROF_BUS_ETH_RX.
+
+config ZPROF_BUS_I2C_STM32
+	bool "I2C messages (wraps the STM32 driver's i2c_stm32_transaction)"
+	default y
+	depends on I2C_STM32 && !I2C_RTIO
+	help
+	  Address, device, length, duration and return code of every
+	  message; its data only with ZPROF_BUS_I2C_DATA.
+
+config ZPROF_BUS_I2C_DATA
+	bool "Keep the first 8 data bytes of each I2C message: opt in"
+	depends on ZPROF_BUS_I2C_STM32
+	help
+	  Off unless chosen. The bytes on a bus can be sensitive: a touch
+	  controller on a PIN pad tells where fingers press, a secure element
+	  or a memory may carry keys. Useful when debugging a driver's
+	  register traffic on a development board.
+
+config ZPROF_BUS_DISK
+	bool "Disk transfers (wraps disk_access_read and disk_access_write)"
+	default y
+	depends on DISK_ACCESS
+
+endif # ZPROF_BUS
+
 DT_CHOSEN_Z_DTCM := zephyr,dtcm
 
 config ZPROF_RING_DTCM

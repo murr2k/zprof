@@ -72,9 +72,18 @@ static ALWAYS_INLINE uint16_t isr_id(void)
 		(*(h))++;              \
 	} while (0)
 
-/* Lock held. */
-static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0,
-				 uint32_t a1, uint32_t a2, uint32_t a3)
+/* Where a record goes: the ring or the capture buffer, and its head. */
+struct slot {
+	uint32_t *w;
+	uint32_t mask;
+	uint32_t h;
+	bool cap;
+};
+
+/* Room for a record of nw payload words, after a pending OVERFLOW (written here);
+ * false: no room, the record is dropped and counted. Lock held. Inlined into both
+ * writers, so the hooks' path is what it was. */
+static ALWAYS_INLINE bool reserve(uint32_t ts, uint32_t nw, struct slot *s)
 {
 	struct zprof_ring *r = &zprof_ring;
 	uint32_t *cap = r->cap;
@@ -99,7 +108,7 @@ static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t
 	if (free < need) {
 		r->dropped++;
 		r->dropped_all++;
-		return;
+		return false;
 	}
 	if (r->dropped != 0u) {
 		uint64_t kc = k_cycle_get_64();
@@ -112,6 +121,36 @@ static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t
 		wr(&h, (uint32_t)(uintptr_t)_current);
 		r->dropped = 0u;
 	}
+	s->w = w;
+	s->mask = mask;
+	s->h = h;
+	s->cap = cap != NULL;
+	return true;
+}
+
+static ALWAYS_INLINE void commit(const struct slot *s, uint32_t h)
+{
+	compiler_barrier(); /* the record is in the ring before head says so */
+	if (s->cap) {
+		zprof_ring.cap_len = h;
+	} else {
+		zprof_ring.head = h;
+	}
+}
+
+/* Lock held. */
+static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0,
+				 uint32_t a1, uint32_t a2, uint32_t a3)
+{
+	struct slot s;
+
+	if (!reserve(ts, nw, &s)) {
+		return;
+	}
+	uint32_t *w = s.w;
+	uint32_t mask = s.mask;
+	uint32_t h = s.h;
+
 	wr(&h, ts);
 	wr(&h, ZPROF_REC_HDR(id, nw, arg));
 	if (nw > 0u) {
@@ -126,12 +165,33 @@ static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t
 	if (nw > 3u) {
 		wr(&h, a3);
 	}
-	compiler_barrier(); /* the record is in the ring before head says so */
-	if (cap != NULL) {
-		r->cap_len = h;
-	} else {
-		r->head = h;
+	commit(&s, h);
+}
+
+/* A record of up to 15 payload words from an array (bus records); not a hook's
+ * path. */
+void zprof_put_n(uint8_t id, uint16_t arg, uint32_t nw, const uint32_t *p)
+{
+	if (!zprof_ring.on || nw > 15u) {
+		return;
 	}
+	unsigned int key = arch_irq_lock();
+	uint32_t ts = ts_now();
+	struct slot s;
+
+	if (zprof_ring.on && reserve(ts, nw, &s)) {
+		uint32_t *w = s.w;
+		uint32_t mask = s.mask;
+		uint32_t h = s.h;
+
+		wr(&h, ts);
+		wr(&h, ZPROF_REC_HDR(id, nw, arg));
+		for (uint32_t i = 0; i < nw; i++) {
+			wr(&h, p[i]);
+		}
+		commit(&s, h);
+	}
+	arch_irq_unlock(key);
 }
 
 void zprof_capture_begin(uint32_t *buf, uint32_t words)
@@ -241,6 +301,26 @@ void zprof_trigger(uint32_t why)
 	if (start) {
 		k_timer_start(&rec_post_timer, K_MSEC(zprof_rec.post_ms), K_NO_WAIT);
 	}
+}
+
+void zprof_recorder_fault(void)
+{
+	unsigned int key = arch_irq_lock();
+
+	if ((zprof_rec.state == ZPROF_REC_ARMED || zprof_rec.state == ZPROF_REC_TRIGGERED) &&
+	    zprof_ring.overwrite) {
+		uint64_t kc = k_cycle_get_64();
+
+		/* a last SYNC, then stop: the timers find nothing to do (rec_freeze checks
+		 * the state, a SYNC with the ring off writes nothing) */
+		put_locked(ts_now(), ZPROF_EV_SYNC, 0, 3, (uint32_t)kc, (uint32_t)(kc >> 32),
+			   k_uptime_get_32(), 0);
+		zprof_ring.on = false;
+		zprof_ring.overwrite = false;
+		zprof_rec.state = ZPROF_REC_HELD;
+		zprof_rec.triggers++;
+	}
+	arch_irq_unlock(key);
 }
 
 void zprof_recorder_set(uint32_t post_ms)
@@ -404,9 +484,14 @@ ZPROF_HOT void zprof_hook_switched_out(void)
 	    !(st & _THREAD_QUEUED) && ts_now() - site_ts < site_window) {
 		site_th = NULL;
 		PUT3(ZPROF_EV_SWITCH_OUT, st, PTR(t), PTR(t->base.pended_on), PTR(site_pc));
-		return;
+	} else {
+		PUT2(ZPROF_EV_SWITCH_OUT, st, PTR(t), PTR(t->base.pended_on));
 	}
-	PUT2(ZPROF_EV_SWITCH_OUT, st, PTR(t), PTR(t->base.pended_on));
+#ifdef CONFIG_ZPROF_PMU
+	if (zprof_pmu.flags & ZPROF_PMU_F_SWITCH) {
+		zprof_pmu_put(ZPROF_PMU_SWITCH);   /* the counts since the last: this thread's */
+	}
+#endif
 }
 
 ZPROF_HOT void zprof_hook_ready(struct k_thread *thread)

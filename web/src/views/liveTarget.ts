@@ -268,7 +268,10 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
   tgrid.setCellChangeHighlight(false)
   const igrid = dataTable(dash, { columnIndex: 3, rowIndex: 2 }).setTitle('Interrupts, last second').setTitleFont((f) => f.setSize(13))
   igrid.setCellChangeHighlight(false)
-  const ogrid = dataTable(dash, { columnIndex: 0, rowIndex: 3, columnSpan: 4 })
+  // threads the target's fault handler ended while the rest ran on (zprof fault capture)
+  const fgrid = dataTable(dash, { columnIndex: 3, rowIndex: 3 }).setTitle('Faults: threads ended, the board ran on').setTitleFont((f) => f.setSize(13))
+  fgrid.setCellChangeHighlight(false)
+  const ogrid = dataTable(dash, { columnIndex: 0, rowIndex: 3, columnSpan: 3 })
     .setTitle('Kernel objects, last second: contended mutexes first, then by time threads waited on them (k_timer: its expiry function; without: returned without the object)')
     .setTitleFont((f) => f.setSize(13))
   ogrid.setCellChangeHighlight(false)
@@ -308,13 +311,26 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
       { id: 'self', label: 'zprof own cost', value: s.self_pct.toFixed(2), unit: '%', sub: `hooks ${s.hooks_pct.toFixed(2)}% at ${h.hook_ns} ns`, status: level('agent.self', s.self_pct), source: 'trace + hello' },
       { id: 'tgt', label: 'Target', value: `Zephyr ${h.kernel}`, sub: `${h.ts_hz / 1e6} MHz DWT, ring ${h.ring_kb} KB${h.elf ? `, ${h.elf}${h.elf_ok === false ? ' (OTHER BUILD)' : ''}` : ', no ELF'}`, status: h.elf_ok === false ? 'warn' : 'info', source: 'hello' },
     ]
+    const ft = s.faults
+    if (ft && ft.count > 0) {
+      // a thread the fault handler ended: the board runs on without it
+      const last = ft.rows[0]
+      tiles.splice(5, 0, { id: 'faults', label: 'Faults', value: String(ft.count), sub: last ? `${last.thread}: ${last.reason}` : '', status: 'crit', source: 'fault handler' })
+    }
     kpi.setTiles(tiles)
 
-    const head = ['Thread', 'Prio', 'CPU %', 'net %', 'In/s', 'Wake us', 'p99', 'max']
+    // PMU figures per thread (IPC, misses per 1000 instructions, stall share) when the
+    // bridge asked for a PMU record at every switch (serve --pmu-threads)
+    const pcols = s.pmu_cols ?? []
+    const head = ['Thread', 'Prio', 'CPU %', 'net %', 'In/s', 'Wake us', 'p99', 'max', ...pcols.map((c) => c[1])]
     const rows: CellContent[][] = s.threads.filter((r) => r.cpu_pct > 0 || r.switches_s > 0).map((r) => [
       r.sender ? `${r.name} (zprof)` : r.name, r.prio === null ? '' : String(r.prio),
       { value: r.cpu_pct, text: r.cpu_pct.toFixed(2), bar: r.cpu_pct, barMin: 0, barMax: 100, barColor: (colorByName.get(r.name) ?? t.uiText).setA(255) },
       r.net_pct.toFixed(2), r.switches_s.toFixed(0), us(r.wake_mean_us), us(r.wake_p99_us), us(r.wake_max_us),
+      ...pcols.map(([k]) => {
+        const v = r.pmu?.[k]
+        return v === undefined ? '' : v.toFixed(k === 'ipc' ? 2 : 1)
+      }),
     ])
     tgrid.setTableContent([head, ...rows])
     const ihead = ['Interrupt', '/s', 'CPU %', 'mean us', 'max us']
@@ -326,6 +342,13 @@ function build(host: HTMLElement, t: Theme, h: LiveHello, prefs: Prefs,
       r.timer ? '' : { value: r.wait_pct, text: r.wait_pct.toFixed(2), bar: r.wait_pct, barMin: 0, barMax: 100, barColor: r.contended ? bad.setA(220) : restC },
       us(r.wait_mean_us), us(r.wait_max_us), r.without ? String(r.without) : '',
     ])])
+
+    const fl = s.faults ?? { count: 0, rows: [] }
+    const up = (t: number) => (t < 60 ? `${t.toFixed(1)} s` : t < 3600 ? `${Math.floor(t / 60)}m ${Math.floor(t % 60)}s` : `${Math.floor(t / 3600)}h ${Math.floor((t % 3600) / 60)}m`)
+    fgrid.setTableContent([['Up', 'Thread', 'Reason', 'In'], ...(fl.rows.length
+      ? fl.rows.map((r): CellContent[] => [up(r.t_s), r.thread, r.reason, r.where])
+      : [['', 'none since boot', '', '']]),
+      ...(fl.count > fl.rows.length ? [[`${fl.count} since boot`, 'the last 4 above', '', '']] : [])])
   }
 
   // The bridge re-makes a broken link by itself; the timeline goes on after the gap.

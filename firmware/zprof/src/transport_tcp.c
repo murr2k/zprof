@@ -124,6 +124,9 @@ struct dict_ctx {
 static void dict_entry(uint16_t index, const struct zprof_metric *m, void *user);
 static int cap_status(int s);
 static int rec_status(int s);
+static int pmu_status(int s);
+static int fault_status(int s, bool hello);
+static int proto_status(int s);
 
 static void thread_entry(const struct k_thread *t, void *user)
 {
@@ -212,7 +215,8 @@ static int hello(int s)
 	struct dict_ctx dc = {.s = s};
 
 	zprof_metric_dict(dict_entry, &dc);
-	if (dc.err || cap_status(s) < 0 || rec_status(s) < 0) {
+	if (dc.err || cap_status(s) < 0 || rec_status(s) < 0 || pmu_status(s) < 0 || fault_status(s, true) < 0 ||
+	    proto_status(s) < 0) {
 		return -EIO;
 	}
 	return thread_table(s, true, &threads_sig);
@@ -382,6 +386,79 @@ static int cap_finish(int s)
 	return 0;
 }
 
+/* The buses recorded now and those built in: HT_PROTO. */
+static int proto_status(int s)
+{
+#ifdef CONFIG_ZPROF_BUS
+	uint8_t v[8];
+
+	sys_put_le32(zprof_proto, &v[0]);
+	sys_put_le32(zprof_proto_avail, &v[4]);
+	return (tlv(s, ZPROF_HT_PROTO, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+#else
+	ARG_UNUSED(s);
+	return 0;
+#endif
+}
+
+/* Faults: the brief log of the last ones (HT_FAULT_LOG) and the full record of the
+ * last (HT_FAULT, fault.c), in every hello while the board holds them (until a
+ * reset: every client gets them, the dashboard does not use them up), and to the
+ * connected client as soon as a new one comes. */
+static int fault_status(int s, bool hello)
+{
+#ifdef CONFIG_ZPROF_FAULT
+	static int sent;   /* the fault count this session has sent */
+	struct zprof_fault_info fi[4];
+	int total = zprof_faults(fi, ARRAY_SIZE(fi));
+
+	if (!hello && total == sent && !zprof_fault_new) {
+		return 0;
+	}
+	if (total > 0) {
+		/* the brief log of the last faults: the client's alarm list */
+		uint8_t v[4 + sizeof(fi)];
+		int k = MIN(total, (int)ARRAY_SIZE(fi));
+
+		sys_put_le32((uint32_t)total, v);
+		memcpy(&v[4], fi, (size_t)k * sizeof(fi[0]));
+		if (tlv(s, ZPROF_HT_FAULT_LOG, v, (uint16_t)(4 + k * sizeof(fi[0]))) < 0) {
+			return -EIO;
+		}
+	}
+	sent = total;
+	if ((hello || zprof_fault_new) && zprof_fault.magic == ZPROF_FAULT_MAGIC) {
+		zprof_fault_new = false;   /* this session has it; the next hello sends it again */
+		if (tlv(s, ZPROF_HT_FAULT, &zprof_fault, sizeof(zprof_fault)) < 0) {
+			return -EIO;
+		}
+	}
+	return hflush(s) < 0 ? -EIO : 0;
+#else
+	ARG_UNUSED(s);
+	ARG_UNUSED(hello);
+	return 0;
+#endif
+}
+
+/* The PMU's events and flags: HT_PMU. */
+static int pmu_status(int s)
+{
+#ifdef CONFIG_ZPROF_PMU
+	uint8_t v[16];
+
+	for (int n = 0; n < ZPROF_PMU_N; n++) {
+		sys_put_le16(zprof_pmu.ev[n], &v[2 * n]);
+	}
+	sys_put_le32(zprof_pmu.flags, &v[8]);
+	sys_put_le32(zprof_pmu_auth(), &v[12]);
+	return (tlv(s, ZPROF_HT_PMU, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+#else
+	ARG_UNUSED(s);
+	return 0;
+#endif
+}
+
 /* The flight recorder's state: HT_RECORDER. */
 static int rec_status(int s)
 {
@@ -457,6 +534,25 @@ static int control(int s, const uint8_t *p, size_t n)
 			if (rec_status(s) < 0) {
 				return -EIO;
 			}
+#ifdef CONFIG_ZPROF_PMU
+		} else if (tag == ZPROF_CT_PMU && len == 12u) {
+			uint16_t ev[ZPROF_PMU_N];
+
+			for (int k = 0; k < ZPROF_PMU_N; k++) {
+				ev[k] = sys_get_le16(p + 4 + 2 * k);
+			}
+			zprof_pmu_set(ev, sys_get_le32(p + 12));
+			if (pmu_status(s) < 0) {
+				return -EIO;
+			}
+#endif
+#ifdef CONFIG_ZPROF_BUS
+		} else if (tag == ZPROF_CT_PROTO && len == 4u) {
+			zprof_proto = sys_get_le32(p + 4) & zprof_proto_avail;
+			if (proto_status(s) < 0) {
+				return -EIO;
+			}
+#endif
 		}
 		p += 4u + len;
 		n -= 4u + len;
@@ -525,6 +621,12 @@ static void session(int s)
 	/* every session starts recording every class: a client that says nothing gets
 	 * them all, whatever the last one chose (the bridge sends its choice again) */
 	zprof_classes = BIT_MASK(ZPROF_OBJ_LAST - ZPROF_OBJ_FIRST + 1);
+#ifdef CONFIG_ZPROF_PMU
+	zprof_pmu_defaults();   /* the same for the PMU's events (the hello reports them) */
+#endif
+#ifdef CONFIG_ZPROF_BUS
+	zprof_proto = 0u;       /* and no bus records until the host asks (they are bulky) */
+#endif
 	sys_put_le16(ZPROF_PROTO_VERSION, &pre[4]);
 	sys_put_le16(0, &pre[6]);
 	struct iovec iov = {.iov_base = pre, .iov_len = sizeof(pre)};
@@ -629,6 +731,10 @@ static void session(int s)
 				}
 			}
 			t_stats = now;
+		}
+		/* a thread faulted and the rest ran on: the record now */
+		if (fault_status(s, false) < 0) {
+			break;
 		}
 		/* control from the host; also how a client that left is noticed */
 		if (poll_control(s) < 0) {

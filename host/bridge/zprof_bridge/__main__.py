@@ -25,7 +25,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import link, presets, record
+from . import bus, fault, link, pmu, presets, record
 from . import proto as P
 from . import thresholds as TH
 from .analyze import Analysis, irq_names_from_header, report
@@ -38,7 +38,10 @@ from .stream import Decoder, StreamError
 def _analysis(d: Decoder, a: argparse.Namespace) -> Analysis:
     elf = Elf(a.elf) if a.elf else None
     names = irq_names_from_header(a.irq_header) if a.irq_header else {}
-    return Analysis(d, elf, names)
+    an = Analysis(d, elf, names)
+    if getattr(a, "anonymize", False):
+        an.anonymize = bus.Anonymizer()   # the summary's flows name stand-ins, not hosts
+    return an
 
 
 def cmd_discover(a: argparse.Namespace) -> None:
@@ -130,6 +133,59 @@ def cmd_recorder(a: argparse.Namespace) -> None:
         s.close()
 
 
+def cmd_fault(a: argparse.Namespace) -> None:
+    """A fault the target holds (a thread ended by zprof's handler), with what the
+    flight recorder froze before it; with --wait, stay and show faults as they come."""
+    host, port = _board(a)
+    elf = Elf(a.elf) if a.elf else None
+    d = Decoder()
+    got: list[bytes] = []
+    marks: list[tuple] = []
+    d.on_recorder = marks.append
+    shown = 0
+    s = link.connect(host, port)
+
+    def pump(t_end: float, done=lambda: False) -> None:
+        nonlocal shown
+        while time.time() < t_end and not done():
+            try:
+                data = s.recv(1 << 16)
+            except socket.timeout:
+                continue
+            if not data:
+                sys.exit("the target closed the session")
+            got.append(data)
+            d.feed(data)
+            for f in d.faults[shown:]:
+                print("\n".join(fault.describe(f, elf)))
+            shown = len(d.faults)
+
+    try:
+        pump(time.time() + 10, lambda: d.ready)
+        if not d.ready:
+            sys.exit("no hello from the target")
+        if d.hello.recorder[0] == P.REC_HELD:
+            pump(time.time() + 60, lambda: any(r[0] != P.REC_HELD for r in marks[1:]))
+        pump(time.time() + max(a.wait, 0.5))
+    except KeyboardInterrupt:
+        pass
+    finally:
+        s.close()
+    if not d.faults:
+        print(f"{host}: no fault held" + (f" (and none in {a.wait:g} s)" if a.wait else ""))
+        return
+    out = a.out or time.strftime("fault-%Y%m%d-%H%M%S.zpr")
+    meta = {"host": host, "port": port, "fault": True}
+    if a.elf:
+        meta |= {"elf": str(Path(a.elf).resolve()), "elf_sha256": record.sha256(Path(a.elf))}
+    w = record.Writer(out, meta)
+    for c in got:
+        w.chunk(c)
+    w.close()
+    print(f"saved {out}" + (": with the flight recorder's frozen ring" if d.hello.recorder[0] == P.REC_HELD
+                            else ""))
+
+
 def cmd_capture(a: argparse.Namespace) -> None:
     host, port = _board(a)
     meta = {"host": host, "port": port}
@@ -138,6 +194,10 @@ def cmd_capture(a: argparse.Namespace) -> None:
     d = Decoder()
     w = record.Writer(a.out, meta)
     s = link.connect(host, port)
+    if a.pmu or a.pmu_threads:
+        s.sendall(pmu.frame(pmu.PRESETS[a.pmu] if a.pmu else None, a.pmu_threads))
+    if a.proto:
+        s.sendall(bus.frame(a.proto))
     t_end = time.time() + a.secs
     ends: list[tuple] = []          # the target's capture status at the end (DONE or UNAVAILABLE)
     if a.buffer:
@@ -202,6 +262,15 @@ def cmd_export(a: argparse.Namespace) -> None:
 
     d = Decoder()
     head = record.feed_all(a.recording, d)
+    if a.pcapng:
+        from . import pcapng
+
+        recs = [r for r in d.records if r.id < 0x100]
+        n = pcapng.write(a.pcapng, d.records, d.hello.ts_hz, head.get("host_start_ns", 0),
+                         recs[0].t if recs else None, bus.Anonymizer() if a.anonymize else None)
+        print(f"{a.pcapng}: {n:,} Ethernet frames (their first {P.ETH_SNAP} bytes), for Wireshark"
+              + ("" if n else ": none in this recording (capture with --proto eth)"))
+        return
     elf = a.elf or head.get("elf")
     a.elf = elf if elf and Path(elf).exists() else None
     out = a.out or str(Path(a.recording).with_suffix(".json"))
@@ -279,11 +348,29 @@ def cmd_serve(a: argparse.Namespace) -> None:
         s = live.LiveSession(elf, names, target=f"{host}:{port}", source="live", deadlines=dl, thresholds=th)
         if a.preset:
             s.want_classes = BY_ID[a.preset]["classes"]
+        if a.pmu or a.pmu_threads:
+            s.want_pmu = (pmu.PRESETS[a.pmu] if a.pmu else None, a.pmu_threads)
+        if a.proto:
+            s.want_proto = a.proto
         src = live.from_board(s, host, port, w)
     try:
         asyncio.run(live.serve(s, src, a.ws_port))
     except KeyboardInterrupt:
         pass
+
+
+ANON_HELP = ("hosts in Ethernet frames as stand-ins (documentation addresses) in what is printed or "
+             "exported; a .zpr recording itself keeps the real headers: keep it private")
+
+
+def _pmu_args(sp: argparse.ArgumentParser) -> None:
+    sp.add_argument("--pmu", choices=list(pmu.PRESETS),
+                    help="the PMU events the target counts (default: its own, the cache set)")
+    sp.add_argument("--pmu-threads", action="store_true",
+                    help="a PMU record at every thread switch: per-thread IPC, misses and stalls")
+    sp.add_argument("--proto", type=bus.mask, metavar="eth,i2c,disk|all",
+                    help="the protocol analyzer: record these buses (Ethernet frames, I2C messages, disk transfers)")
+    sp.add_argument("--anonymize", action="store_true", help=ANON_HELP)
 
 
 def main() -> None:
@@ -302,6 +389,7 @@ def main() -> None:
     sp.add_argument("--raw", action="store_true", help="record only, decode nothing (long sessions)")
     sp.add_argument("--buffer", action="store_true",
                     help="capture-then-upload: the target records into its buffer and sends nothing until the end")
+    _pmu_args(sp)
     sp.set_defaults(fn=cmd_capture)
     sp = sub.add_parser("recorder", help="the flight recorder: arm, off, or status; collects what it holds first")
     sp.add_argument("action", choices=("arm", "off", "status"))
@@ -312,6 +400,13 @@ def main() -> None:
     sp.add_argument("-o", "--out", help="where a held recording goes (default flight-<time>.zpr)")
     sp.add_argument("--elf")
     sp.set_defaults(fn=cmd_recorder)
+    sp = sub.add_parser("fault", help="a fault the target holds, symbolized; with --wait, faults as they come")
+    sp.add_argument("--host")
+    sp.add_argument("--port", type=int)
+    sp.add_argument("--wait", type=float, default=0.0, help="stay connected this long, showing faults")
+    sp.add_argument("-o", "--out", help="where it is saved (default fault-<time>.zpr)")
+    sp.add_argument("--elf")
+    sp.set_defaults(fn=cmd_fault)
     sp = sub.add_parser("check", help="replay equals live: a recording decoded as it arrived and in other pieces")
     sp.add_argument("recording")
     sp.add_argument("--elf")
@@ -320,10 +415,13 @@ def main() -> None:
     sp.add_argument("recording")
     sp.add_argument("--elf")
     sp.add_argument("--irq-header")
+    sp.add_argument("--anonymize", action="store_true", help=ANON_HELP)
     sp.set_defaults(fn=cmd_summary)
-    sp = sub.add_parser("export", help="Trace Event JSON for ui.perfetto.dev")
+    sp = sub.add_parser("export", help="Trace Event JSON for ui.perfetto.dev, or Ethernet frames as pcapng")
     sp.add_argument("recording")
     sp.add_argument("-o", "--out")
+    sp.add_argument("--pcapng", help="write the recording's Ethernet frames here (for Wireshark) instead")
+    sp.add_argument("--anonymize", action="store_true", help=ANON_HELP)
     sp.add_argument("--elf")
     sp.add_argument("--irq-header")
     sp.set_defaults(fn=cmd_export)
@@ -340,6 +438,7 @@ def main() -> None:
     sp.add_argument("--deadlines", help="threads' deadlines and release objects (JSON); else D = period")
     sp.add_argument("--thresholds", help="thresholds file (default config/zprof.thresholds.json)")
     sp.add_argument("--preset", choices=list(BY_ID), help="what the target records (the page can change it)")
+    _pmu_args(sp)
     sp.set_defaults(fn=cmd_serve)
     sp = sub.add_parser("sched", help="schedulability analysis of a recording")
     sp.add_argument("recording")

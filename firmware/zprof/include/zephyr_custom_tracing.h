@@ -101,6 +101,14 @@
 #define sys_port_trace_k_thread_abort(thread)       zprof_hook_abort(thread)
 #define sys_port_trace_k_thread_name_set(thread, ret) zprof_hook_name(thread)
 
+/* The protocol analyzer: every received frame, as the driver hands it up (bus.c;
+ * the network headers stay out of this header). Compiled in whatever
+ * TRACING_NETWORKING says: these net hooks have no class switch. */
+#ifdef CONFIG_ZPROF_BUS_ETH_RX
+void zprof_net_rx(void *pkt);
+#define sys_port_trace_net_recv_data_enter(iface, pkt) zprof_net_rx(pkt)
+#endif
+
 #include "zprof_trace_defaults.h"
 
 #endif /* ZPROF_ZEPHYR_CUSTOM_TRACING_H_ */

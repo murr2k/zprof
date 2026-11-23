@@ -86,6 +86,9 @@ void zprof_heartbeat(uint32_t n)
 	ZPROF_SET(zprof_m_ring, zprof_ring_peak * 100u / ZPROF_RING_WORDS);
 	zprof_ring_peak = 0;
 	zprof_port_heartbeat();
+#ifdef CONFIG_ZPROF_PMU
+	zprof_pmu_put(ZPROF_PMU_BEAT);
+#endif
 
 	uint16_t i = 0;
 

@@ -8,6 +8,56 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+## [0.6.0] - 2026-11-22
+
+### Added
+
+- PMU counts (`CONFIG_ZPROF_PMU`, opt-in on the Cortex-M55 and M85): four
+  events at a time from the Armv8.1-M PMU, each a chained pair of its 16-bit
+  counters. By default instructions, instruction- and data-cache refills and
+  back-end stall cycles; `--pmu helium` counts MVE instructions and MVE stalls
+  instead. A PMU record at every heartbeat (the Timing view's `pmu.*` series),
+  and with `--pmu-threads` (capture, serve) after every thread switch:
+  per-thread IPC, refills per 1000 instructions and stall share in `summary`
+  and the Live target's thread table. Protocol: record PMU (0x73), hello tag
+  HT_PMU (14), control CT_PMU (68) (docs/PROTOCOL.md section 4d).
+- Fault capture, all opt-in so that adding zprof never changes how a device
+  fails: `zprof_fault_capture()` (`CONFIG_ZPROF_FAULT`), called from a fatal
+  error handler, keeps the fault (registers, the thread, up to 8 return
+  addresses) in the DTCM, puts a FAULT record in the trace and freezes an armed
+  flight recorder; an application's own handler calls it and keeps its policy.
+  `CONFIG_ZPROF_FAULT_HANDLER` has zprof supply the handler (it halts, as
+  Zephyr's does) and `CONFIG_ZPROF_FAULT_CONTINUE` lets a fault in a thread that
+  is not essential end only that thread while the target runs on (an
+  interrupt, main, idle or a panic still halt). Every client gets the fault while the target holds it
+  (until a reset): an open dashboard does not use it up. `zprof_bridge fault`
+  prints it with PC, LR and the call trace named from the ELF; `summary` shows
+  faults found in a recording.
+  `zprof_faults()` gives the application the last four for its own alarm; the
+  Live target page lists them in a Faults pane and a red tile. Protocol:
+  record FAULT (0x65), hello tags HT_FAULT (15) and HT_FAULT_LOG (17)
+  (section 4e).
+- Bus records, the protocol analyzer's first slice (`CONFIG_ZPROF_BUS`,
+  opt-in): I2C messages and disk transfers (duration, return code, sectors;
+  the first 8 I2C data bytes only with `CONFIG_ZPROF_BUS_I2C_DATA`), and,
+  opted into separately, Ethernet frames (the first 56 bytes, zprof's own
+  stream left out). Each kind only while a client asks
+  (`--proto eth,i2c,disk`). `summary` gains a buses section (per I2C device,
+  disk throughput, frame rates, the busiest flows); `export --pcapng` writes
+  the frames for Wireshark; `--anonymize` replaces hosts with documentation
+  addresses. Protocol: records ETH_RX, ETH_TX, I2C, DISK (0x80 to 0x83),
+  hello tag HT_PROTO (16), control CT_PROTO (69) (section 4f).
+
+### Security
+
+- The dashboard's dev server: Vite 6.4.6 (was 6.4.4: `server.fs.deny`
+  could be bypassed with query strings, a moderate advisory). The dev server
+  listens on 127.0.0.1 only.
+- Ethernet capture is off unless a build opts in: built in, anyone who
+  reaches zprof's port (no login) could read the target's traffic headers.
+  README "Security and privacy" says what a trace can hold and how to keep
+  captures private.
+
 ## [0.5.0] - 2026-11-22
 
 ### Added
@@ -432,7 +482,8 @@ visualizations, an intelligence layer, and a safe write path to the target.
 - Thresholds file with JSON Schema: live alarms, run pass criteria, build gate.
 - Zephyr `main` pinned by SHA in `firmware/west.yml`.
 
-[Unreleased]: https://github.com/murr2k/zprof/compare/v0.5.0...HEAD
+[Unreleased]: https://github.com/murr2k/zprof/compare/v0.6.0...HEAD
+[0.6.0]: https://github.com/murr2k/zprof/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/murr2k/zprof/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/murr2k/zprof/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/murr2k/zprof/compare/v0.3.0...v0.4.0

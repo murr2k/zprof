@@ -9,7 +9,7 @@ serves a GPU dashboard built on [Sferic](https://github.com/murr2k/sferic-charts
 
 ![Live target: scheduler timeline, CPU by thread, interrupts and kernel objects of the STM32N6570-DK demo](docs/img/live-target.jpg)
 
-**Status (v0.5.0).** Tested on one target: the
+**Status (v0.6.0).** Tested on one target: the
 STM32N6570-DK (Cortex-M55 at 800 MHz) running Zephyr v4.4.0 and the
 [stm32n6-demo](https://github.com/murr2k/stm32n6-demo) (60 Hz LVGL display,
 2.7 ms audio refills, NPU, camera, H.264 encoder, Ethernet services). The
@@ -35,6 +35,9 @@ the STM32N6570-DK demo.
 | Kernel objects with wait reasons, owners and call sites (`file.c:line`) | See what each thread waits for and where, and tell idle rest from contention | A TCP connection's mutex contended up to 7.5 ms, partly by zprof's own sender: the tool reports its own effect too |
 | Event-loop shapes | An architecture check from the running system: active objects, wait points, handlers that block | Audio, microphone, Ethernet, player I/O, NPU and card watcher are active objects; main is a marked job loop with one wait point; the web and Home Power services are sequential loops with 3 to 10 wait points |
 | Capture-then-upload | A window with no trace traffic on the network at all, for the cases where streaming would disturb the measurement | 4 MB, 8 s of the attract lap with two 1.5 MB screenshots sent meanwhile: no record lost |
+| The core's PMU, per thread (`--pmu-threads`) | Tell compute from waiting on memory: instructions per cycle, cache refills, stall share, Helium share, for each thread | Home's UI thread: IPC 0.42, 13 data-cache refills per 1000 instructions, a third of its cycles stalled in the back end (memory-bound frame fills); Signal Lab: 3 % of its instructions Helium, the audio threads none |
+| Faults captured (`fault`, opt-in) | The registers, the call trace named from the ELF and the moments before a fault reach the PC; the failure policy stays the application's (zprof's own handler, halting or running on, only if chosen) | The demo chose to run on: a divide by zero in a test thread was named to its source line, no frame was dropped, and its status bar, Settings, web remote and this dashboard listed the dead thread |
+| Bus records (`--proto i2c,disk`; Ethernet opt-in) | I2C messages, disk transfers and Ethernet frames on the trace's clock; the frames as pcapng for Wireshark | Camera screen: 26 I2C messages a second to the image sensor, the slowest 5.3 ms; a clip from the card: 0.61 MB/s of reads, the slowest 19 ms; Wireshark reads the export |
 | Flight recorder (`ZPROF_TRIGGER`) | Catch an event nobody can reproduce on demand: armed, the board records while nobody is connected and keeps the moments before the application's trigger for the next client | A dropped frame on Home: 0.4 s before it kept in the 64 KB ring, the frame's 35.9 ms named as the main thread's own work |
 | Recordings, a replay-equals-live check, Perfetto export | Regression evidence: compare builds run against run, and share a trace | 481,881 records decoded identically in different pieces |
 | A link that recovers by itself | Cable pulls, resets and reflashes need no restart of anything | Streaming resumed 0.5 s after a 4 s carrier drop, 0 records lost |
@@ -58,6 +61,41 @@ the STM32N6570-DK demo.
   from priority 14 to 1.
 - **Something periodic on Home.** Its frames fall into two bands, about 5.3
   and 6.3 ms, visible in the Timing view and not yet explained.
+
+### Security and privacy
+
+- **zprof's port (TCP 5560) has no login and no encryption.** Anyone who can
+  reach it can read the trace and change what is recorded. Use it on a
+  development network, never across the boundary of a secure perimeter. The
+  bridge serves the dashboard on 127.0.0.1 only.
+- **What a trace can hold:** thread names, code addresses (function names with
+  the ELF), timing; with bus records, I2C addresses and timing, and only by a
+  further opt-in (`CONFIG_ZPROF_BUS_I2C_DATA`) the first 8 data bytes of each
+  message, which can be sensitive (a touch controller on a PIN pad, a secure
+  element), and disk sector numbers; fault records hold register values, which
+  may include data the faulting code was handling.
+- **Beyond the scheduler, everything is opt-in at build time:** the PMU
+  (zprof takes it over), fault capture and its handler, the bus records and
+  their wraps of driver functions. Adding zprof records thread switches,
+  interrupts, kernel objects and metrics, and changes nothing else.
+- **Ethernet capture is a build-time opt-in** (`CONFIG_ZPROF_BUS_ETH_RX`,
+  `CONFIG_ZPROF_BUS_ETH_STM32_TX`, both off by default). Frame headers name
+  every host the target talks to (MAC and IP addresses, ports), and built in,
+  the capture can be switched on by anyone who reaches the port.
+- **Adding zprof does not change how a device fails.** Fault capture is off by
+  default; an application calls `zprof_fault_capture()` from its own fatal
+  error handler and keeps its policy, or opts into zprof's handler
+  (`CONFIG_ZPROF_FAULT_HANDLER`: halts as Zephyr does) and, separately, into
+  running on after a thread's fault (`CONFIG_ZPROF_FAULT_CONTINUE`). Neither
+  halting nor running on is safe for every system: a halted CPU can leave a
+  power stage's switch on, running on can leave a control loop dead. The
+  product decides, and its safety net belongs in hardware (a watchdog, a
+  timer's break input).
+- **Treat recordings, exports and screenshots of traffic as sensitive:** keep
+  them out of public repositories and tickets. `--anonymize` (`summary`,
+  `capture`, `export --pcapng`) replaces hosts with documentation addresses
+  (192.0.2.0/24 and stand-in MACs) and zeroes payload bytes past the headers;
+  a `.zpr` recording itself keeps the real headers.
 
 ### Limits
 
@@ -83,6 +121,15 @@ the STM32N6570-DK demo.
   host), `ZPROF_TRIGGER` (a missed deadline, say: it freezes the flight
   recorder), and metrics (counters, gauges, timers) latched by a heartbeat every
   100 ms, with each thread's stack watermark every tenth beat.
+- **The core (Armv8.1-M PMU):** four counts at a time, every heartbeat and, on
+  request, at every thread switch: instructions, cache refills, stall cycles,
+  Helium (MVE) instructions.
+- **Faults (opt-in):** the registers, the thread and a call trace, from the
+  application's fatal error handler or zprof's; with zprof's handler and
+  `CONFIG_ZPROF_FAULT_CONTINUE`, a thread that faults ends and the target runs
+  on, unless it is an interrupt, main or idle.
+- **Buses, on request:** I2C messages, disk transfers and (built in by choice)
+  Ethernet frame headers.
 - **Time:** the DWT cycle counter (it runs through WFI on the N6, measured),
   tied to the kernel's 64-bit cycle count every 250 ms; the host places every
   session on the target's clock since boot, so a reconnect continues the same
@@ -116,6 +163,9 @@ From the command line, `python -m zprof_bridge`:
 | `discover` | Finds boards (the stm32n6-demo's discovery query) |
 | `capture` | Records a session to a replayable `.zpr` (`--buffer`: capture-then-upload) |
 | `recorder` | The flight recorder: `arm` (`--post-ms`), `off`, `status`; a held recording is saved to a `.zpr` first, with how far before the trigger it reaches |
+| `fault` | A fault the target holds: reason, thread, PC, LR and the call trace named from the ELF, saved with the frozen ring; `--wait` shows faults as they come |
+| `capture`, `serve` options | `--pmu cache\|helium` and `--pmu-threads` (PMU counts per thread), `--proto eth,i2c,disk\|all` (bus records) |
+| `export --pcapng` | A recording's Ethernet frames for Wireshark |
 | `summary` | Per-thread CPU, interrupts, wake latency, kernel objects, zprof's own cost |
 | `sched` | The schedulability analysis as text |
 | `check` | Replay equals live: a recording decoded in different pieces gives the same answers |
@@ -209,7 +259,7 @@ the ELF of the build that made it: the bridge checks a build id.
 
 Node.js 20 or newer and a browser with WebGL2 on a GPU (tested with Chrome).
 The dashboard imports Sferic from source, checked out beside this repository
-as `lightning` (zprof 0.5.0 is tested with Sferic's `main` at d115deb, the
+as `lightning` (zprof 0.6.0 is tested with Sferic's `main` at d115deb, the
 first commit with the sortable tables it needs):
 
 ```powershell
@@ -306,12 +356,14 @@ Tests: `cd host\bridge; ..\..\.venv\Scripts\python -m pytest -q tests`.
 
 ## Roadmap
 
-- **P4, the M55:** PMU totals per heartbeat, then per thread at switches;
-  Helium (MVE) share; post-mortem ring and triggers; faults captured and
-  symbolised after a reboot.
-- **P5, protocol analyzer:** bus transfers as records (I2C, SD), Ethernet as
-  pcapng with target timestamps, decoders for the demo's own protocols, a
-  Protocol view.
+- **P4, the M55:** done in 0.5.0 and 0.6.0: PMU counts per heartbeat and per
+  thread, Helium share, the flight recorder and triggers, faults captured with
+  the target running on. Left: a fault that halts the target, kept through a
+  reset and reported at the next boot (it needs a retained record a cold boot
+  initialises, and flash boot: development boot parks the chip in the ROM).
+- **P5, protocol analyzer:** first slice in 0.6.0: I2C and disk records,
+  Ethernet frames (opt-in) as pcapng with target timestamps. Left: decoders
+  for the demo's own protocols, a Protocol view.
 - The mockup views ported to live data; a second target (an AMD Zynq PS).
 
 [PLANS.md](docs/PLANS.md) section 0 has the phases and their exit checks.

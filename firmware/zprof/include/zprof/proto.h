@@ -89,12 +89,42 @@
 #define ZPROF_EV_PLOT 0x62  /* the series' name (rodata), a signed 32-bit value */
 #define ZPROF_EV_PRINT 0x63 /* the format (rodata), three 32-bit arguments (integers; no %s) */
 #define ZPROF_EV_TRIGGER 0x64 /* the application's trigger (ZPROF_TRIGGER): why */
+#define ZPROF_EV_FAULT 0x65   /* arg reason (K_ERR_*); pc, thread, flags (ZPROF_FAULT_F_*): the record is HT_FAULT */
+
+/* Fault record flags (HT_FAULT, EV_FAULT). */
+#define ZPROF_FAULT_F_ISR 0x01       /* in an interrupt */
+#define ZPROF_FAULT_F_ESSENTIAL 0x02 /* in an essential thread (main, idle) */
+#define ZPROF_FAULT_F_HALTED 0x04    /* zprof's handler halted the system after it */
+#define ZPROF_FAULT_F_NOWALK 0x08    /* no call trace (a stack overflow, or no unwinder) */
+#define ZPROF_FAULT_F_RAN_ON 0x10    /* zprof's handler returned: the kernel ended the thread, the rest ran on */
+/* neither HALTED nor RAN_ON: the application's own handler captured it and chose */
+
+/* Buses and frames (the protocol analyzer), each only while the host asked for it
+ * (CT_PROTO). Durations in timestamp ticks; the record's time is the transfer's end. */
+#define ZPROF_EV_ETH_RX 0x80 /* arg frame length; 14 words: the frame's first 56 bytes (as handed up by the driver) */
+#define ZPROF_EV_ETH_TX 0x81 /* arg frame length; duration to transmit complete (bit 31: an error), 14 words: its first 56 bytes */
+#define ZPROF_EV_I2C 0x82    /* arg address; device, flags << 16 | length, duration, return code, the first 8 data bytes */
+#define ZPROF_EV_DISK 0x83   /* arg 0 read, 1 write; disk name (rodata), first sector, sectors, duration, return code */
+
+#define ZPROF_PROTO_ETH 1  /* CT_PROTO / HT_PROTO mask bits */
+#define ZPROF_PROTO_I2C 2
+#define ZPROF_PROTO_DISK 4
+#define ZPROF_ETH_SNAP 56  /* bytes of each frame kept */
 
 /* Heartbeat (every CONFIG_ZPROF_HEARTBEAT_MS): one METRIC record per metric, arg =
  * its index in the hello's dictionary; counters and timers count since the last. */
 #define ZPROF_EV_METRIC 0x70       /* arg metric index; value */
 #define ZPROF_EV_THREAD_STATS 0x71 /* thread, execution cycles low, high (the kernel's own count) */
 #define ZPROF_EV_STACK 0x72        /* thread, stack bytes never used, stack size (every Nth heartbeat) */
+#define ZPROF_EV_PMU 0x73          /* arg ZPROF_PMU_*; the four PMU counts (32-bit, wrapping) of the events in HT_PMU */
+
+/* PMU record kinds: at a heartbeat; right after a SWITCH_OUT (the counts since the
+ * last PMU record belong to the thread that switched out); the counters restarted
+ * (new events: a new baseline, no difference to take). */
+#define ZPROF_PMU_BEAT 0
+#define ZPROF_PMU_SWITCH 1
+#define ZPROF_PMU_BASE 2
+#define ZPROF_PMU_F_SWITCH 1 /* HT_PMU / CT_PMU flags: a PMU record at every thread switch */
 
 #define ZPROF_KIND_COUNTER 1 /* events since the last heartbeat */
 #define ZPROF_KIND_GAUGE 2   /* the value now */
@@ -126,6 +156,12 @@
 #define ZPROF_HT_METRIC 11   /* u16 index, u8 kind, u8 0, name NUL unit (the metric dictionary) */
 #define ZPROF_HT_CAPTURE 12  /* u32 state, u32 bytes held, u32 capacity, u32 ms recorded (capture mode) */
 #define ZPROF_HT_RECORDER 13 /* u32 state, u32 ms kept after a trigger, u32 triggers since boot, u32 bytes held */
+#define ZPROF_HT_PMU 14      /* u16 x4 the counted Arm PMU event numbers, u32 flags (ZPROF_PMU_F_*), u32 the PMU's AUTHSTATUS */
+#define ZPROF_HT_FAULT 15    /* the fault record (struct zprof_fault in fault.c, 48 u32 words) */
+#define ZPROF_HT_PROTO 16    /* u32 the buses recorded now (ZPROF_PROTO_*), u32 the ones this build can record */
+#define ZPROF_HT_FAULT_LOG 17 /* u32 faults since boot, then up to 4 (newest first): u32 uptime ms, u32 reason, char[16] thread */
+#define ZPROF_FAULT_MAGIC 0x544C4146 /* "FALT", the record's first word */
+#define ZPROF_FAULT_FRAMES 8 /* return addresses kept */
 #define ZPROF_HT_END 0xFFFF /* end of a hello or of a thread table update */
 
 /* Control TLV, host to target, in frames on the control channel. */
@@ -133,6 +169,8 @@
 #define ZPROF_CT_CAPTURE 65 /* u32 ms (0: until stopped or full): record into the capture buffer, send nothing */
 #define ZPROF_CT_CAPTURE_STOP 66 /* end a capture now: upload what it holds */
 #define ZPROF_CT_RECORDER 67 /* u32 ms to keep recording after a trigger (0: off): the flight recorder; answered with HT_RECORDER */
+#define ZPROF_CT_PMU 68      /* u16 x4 Arm PMU event numbers (0xFFFF: keep), u32 flags (ZPROF_PMU_F_*); answered with HT_PMU */
+#define ZPROF_CT_PROTO 69    /* u32 the buses to record (ZPROF_PROTO_*; every session starts with none); answered with HT_PROTO */
 
 /* Flight recorder (HT_RECORDER's state). Armed, with no client connected, the
  * hooks keep recording into the ring and drop its oldest whole records instead of

@@ -17,6 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
+from . import bus, fault, pmu
 from . import proto as P
 from .elf import Elf
 from .stream import EV_SESSION, SESSION_KINDS, Decoder, Hello
@@ -43,6 +44,7 @@ class ThreadUse:
     isr_in: int = 0            # interrupt time while this thread was the running one
     switches_in: int = 0
     wake_lat: list[int] = field(default_factory=list)
+    pmu: list[int] = field(default_factory=lambda: [0, 0, 0, 0])  # PMU counts while it ran (interrupts in it included)
 
 
 CLASS_NAMES = {P.EV_SEM: "k_sem", P.EV_MUTEX: "k_mutex", P.EV_MSGQ: "k_msgq", P.EV_QUEUE: "k_queue",
@@ -134,6 +136,13 @@ class Tracker:
         self._batch_t = 0
         self._last_stats = 0
         self._gap = (hello.ts_hz or 1) // 20  # 50 ms between batches of THREAD_STATS
+        # the PMU: counts of the events in hello.pmu_events, in all and per thread (exact
+        # only once the target sends a record at every switch: pmu_per_thread)
+        self.pmu_total = [0, 0, 0, 0]
+        self.pmu_per_thread = False
+        self.on_pmu = None   # (kind, the four differences, thread or None, t)
+        self._pmu_base: tuple | None = None
+        self._last_out: int | None = None
 
     def use(self, ptr: int) -> ThreadUse:
         u = self.threads.get(ptr)
@@ -164,6 +173,7 @@ class Tracker:
                 self._blocked.clear()
                 self._idle_at = None
                 self._open.clear()
+                self._pmu_base = None
                 continue
             self.records += 1
             if P.OBJ_FIRST <= rid <= P.OBJ_LAST:
@@ -186,6 +196,7 @@ class Tracker:
                 if self.cur == th and self._run_from is not None:
                     self._ran(th, self._run_from, t)
                 self.cur = None
+                self._last_out = th
                 st = r.arg
                 if st & BLOCKING and not st & P.THS_QUEUED:
                     self._blocked[th] = (t, st, r.w[1] if len(r.w) > 1 else 0)
@@ -223,6 +234,9 @@ class Tracker:
                 self.dropped += r.w[0]
                 self.drops.append((t, r.w[0]))
                 self._blocked.clear()  # the wakeups may be among what was lost
+                self._pmu_base = None  # and PMU records: the next difference would span threads
+            elif rid == P.EV_PMU:
+                self._pmu(r, t)
             elif rid == P.EV_THREAD_STATS:
                 # one batch per second, read thread by thread (an interrupt may land between)
                 if self._batch is not None and t - self._last_stats > self._gap:
@@ -232,6 +246,30 @@ class Tracker:
                     self._batch, self._batch_t = {}, t
                 self._batch[r.w[0]] = r.w[1] | (r.w[2] << 32)
                 self._last_stats = t
+
+    def _pmu(self, r, t: int) -> None:
+        """The counts since the last PMU record: to the thread that just switched out
+        (a SWITCH record follows its SWITCH_OUT), or with per-thread records on, to the
+        thread running at a heartbeat (the sender); always to the total."""
+        vals = tuple(r.w[:4])
+        base, self._pmu_base = self._pmu_base, vals
+        if r.arg == P.PMU_BASE or base is None or len(vals) < 4:
+            return
+        d = [(v - b) & 0xFFFFFFFF for v, b in zip(vals, base)]
+        for i in range(4):
+            self.pmu_total[i] += d[i]
+        th = None
+        if r.arg == P.PMU_SWITCH:
+            self.pmu_per_thread = True
+            th = self._last_out
+        elif self.pmu_per_thread:
+            th = self.cur
+        if th is not None:
+            p = self.use(th).pmu
+            for i in range(4):
+                p[i] += d[i]
+        if self.on_pmu:
+            self.on_pmu(r.arg, d, th, t)
 
     def _object(self, r, t: int) -> None:
         cls, call, phase = r.id, r.arg >> 4, r.arg & 0xF
@@ -414,6 +452,32 @@ def pct(x: float) -> str:
     return f"{x:6.2f}"
 
 
+def pmu_report(an: Analysis) -> list[str]:
+    """The PMU's counts: in all, and per thread when the target sent a record at every
+    switch. Cycle counts as a share of run time, events per 1000 instructions."""
+    h, tr = an.d.hello, an.tracker
+    ev = h.pmu_events
+    if not ev or not any(tr.pmu_total):
+        return []
+    busy = (an.t1 - an.t0) - an.wfi            # timestamp ticks are core cycles here
+    lines = ["", "PMU      " + ", ".join(pmu.name(e) for e in ev) +
+             ("" if tr.pmu_per_thread else "  (totals only: per-thread counts are off)")]
+    if (h.pmu_auth >> 6) & 3 == 2:
+        lines.append("         (secure non-invasive debug is disabled: the counters may not count secure code)")
+    cols = [k for k in pmu.figures(ev, tr.pmu_total, busy or 1)]
+    head = " ".join(f"{pmu.label(c):>12s}" for c in cols)
+    lines.append(f"{'':24s} {head}")
+    rows = [("(all, outside WFI)", tr.pmu_total, busy)]
+    if tr.pmu_per_thread:
+        for u in sorted(an.threads.values(), key=lambda u: -u.run):
+            if any(u.pmu) and u.run:
+                rows.append((an.thread_name(u.ptr), u.pmu, u.run))
+    for label, counts, cyc in rows[:16]:
+        f = pmu.figures(ev, counts, cyc)
+        lines.append(f"{label[:24]:24s} " + " ".join(f"{f.get(c, float('nan')):12.2f}" for c in cols))
+    return lines
+
+
 def report(an: Analysis) -> str:
     d, h = an.d, an.d.hello
     lines = []
@@ -431,6 +495,9 @@ def report(an: Analysis) -> str:
         lines.append(f"clock    timestamp/kernel cycles over {len(r)} SYNC intervals: "
                      f"{min(r):.6f} to {max(r):.6f}" +
                      ("  (the timestamp stops in sleep)" if min(r) < 0.999 else "  (runs through sleep)"))
+    for f in d.faults:
+        lines.append("")
+        lines += fault.describe(f, an.elf)
 
     lines.append("")
     lines.append(f"{'thread':24s} {'prio':>4s} {'CPU %':>6s} {'net %':>6s} {'in/s':>7s} "
@@ -457,6 +524,8 @@ def report(an: Analysis) -> str:
                      f"({len(d.records) / secs:,.0f} events/s x {an.seconds(h.hook_cost) * 1e9:.0f} ns) "
                      f"= {s_pct + hooks_pct:.2f} % of the CPU (the network stack's share not included)")
 
+    lines += pmu_report(an)
+
     lines.append("")
     lines.append(f"{'interrupt':36s} {'/s':>7s} {'CPU %':>6s} {'mean us':>8s} {'max us':>8s}")
     for irq, iu in sorted(an.irqs.items(), key=lambda kv: -kv[1].total):
@@ -482,6 +551,8 @@ def report(an: Analysis) -> str:
                          f"{u.blocks / secs:8.1f} {mean} {worst} {u.without:7d}  {calls}")
         lines.append("  (wait: blocked until the call returned; for k_timer, the expiry function's run time;"
                      " without: returned without the object: a timeout, -EBUSY, an empty poll)")
+
+    lines += bus.report(an)
 
     chk = an.check_against_kernel()
     if chk:

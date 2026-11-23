@@ -10,6 +10,7 @@ from __future__ import annotations
 import re
 from collections import deque
 
+from . import pmu
 from . import proto as P
 from .stream import EV_SESSION
 
@@ -74,6 +75,28 @@ class TimingTracker:
         self._open: dict[tuple[int, str], int] = {}
         self.cur: int | None = None
         self._isr = 0
+        self._pmu_base: tuple | None = None
+        self._pmu_acc = [0, 0, 0, 0]          # since the last heartbeat (switch records add up)
+
+    def _pmu(self, r) -> None:
+        """PMU counts per heartbeat as series named pmu.<event>, like the counters."""
+        vals = tuple(r.w[:4])
+        base, self._pmu_base = self._pmu_base, vals
+        if r.arg == P.PMU_BASE or base is None or len(vals) < 4:
+            self._pmu_acc = [0, 0, 0, 0]
+            return
+        for i in range(4):
+            self._pmu_acc[i] += (vals[i] - base[i]) & 0xFFFFFFFF
+        if r.arg != P.PMU_BEAT:
+            return
+        for e, v in zip(self.hello.pmu_events, self._pmu_acc):
+            name = "pmu." + pmu.name(e)
+            s = self.metrics.get(name)
+            if s is None:
+                s = self.metrics[name] = Series(self.keep)
+                self.metric_info[name] = {"kind": "counter", "unit": "cycles" if pmu.kind(e) == "cycles" else ""}
+            s.add(self._ms(r.t), float(v))
+        self._pmu_acc = [0, 0, 0, 0]
 
     def _ms(self, t: int) -> float:
         return t * 1000.0 / (self.hello.ts_hz or 1)
@@ -94,6 +117,8 @@ class TimingTracker:
                 self._isr += 1
             elif rid == P.EV_ISR_EXIT:
                 self._isr = max(0, self._isr - 1)
+            elif rid == P.EV_PMU:
+                self._pmu(r)
             elif rid == P.EV_METRIC:
                 info = self.hello.metrics.get(r.arg)
                 if info is None:
@@ -147,6 +172,7 @@ class TimingTracker:
             elif rid == P.EV_OVERFLOW or rid == EV_SESSION:
                 self._open.clear()        # a gap: no span bridges it
                 self._isr = 0
+                self._pmu_base = None
                 if rid == EV_SESSION:
                     self.cur = self.hello.sender or None
 

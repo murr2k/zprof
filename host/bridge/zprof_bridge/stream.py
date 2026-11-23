@@ -12,6 +12,7 @@ from __future__ import annotations
 import struct
 from dataclasses import dataclass, field
 
+from . import fault
 from . import proto as P
 
 
@@ -65,6 +66,17 @@ class Hello:
     capture: tuple = (0, 0, 0, 0)
     # the flight recorder (REC_*): state, ms kept after a trigger, triggers since boot, bytes held
     recorder: tuple = (0, 0, 0, 0)
+    # the PMU: the four Arm event numbers counted (empty: none), flags (PMU_F_*), its AUTHSTATUS
+    pmu_events: tuple = ()
+    pmu_flags: int = 0
+    pmu_auth: int = 0
+    # the protocol analyzer: buses recorded now and those the build can record (PROTO_*)
+    proto: int = 0
+    proto_avail: int = 0
+    # threads the target's fault handler ended: faults since boot, the last ones
+    # (uptime ms, reason, thread name), newest first
+    fault_count: int = 0
+    fault_log: list = field(default_factory=list)
 
 
 class StreamError(Exception):
@@ -92,6 +104,8 @@ class Decoder:
         self.on_session = None  # callback(kind): 'first', 'reconnect' or 'reboot', at its first SYNC
         self.on_capture = None  # callback((state, bytes, capacity, ms)): a capture status from the target
         self.on_recorder = None  # callback((state, post_ms, triggers, held)): the flight recorder's status
+        self.on_fault = None     # callback(fault.Fault): a fault record from the target
+        self.faults: list = []   # every fault record received (fault.Fault)
         self._reset_session()
 
     def _reset_session(self) -> None:
@@ -206,6 +220,23 @@ class Decoder:
                     self._offset = None
                 if self.on_recorder:
                     self.on_recorder(h.recorder)
+            elif tag == P.HT_FAULT_LOG:
+                h.fault_count = struct.unpack_from("<I", v)[0]
+                h.fault_log = [(up, reason, name.split(b"\0", 1)[0].decode("utf-8", "replace"))
+                               for up, reason, name in struct.iter_unpack("<II16s", v[4:])]
+            elif tag == P.HT_PROTO:
+                h.proto, h.proto_avail = struct.unpack_from("<II", v)
+            elif tag == P.HT_FAULT:
+                f = fault.parse(v)
+                # every hello carries the fault the target holds: once is enough
+                if f is not None and not any(g.uptime_ms == f.uptime_ms and g.thread == f.thread
+                                             for g in self.faults):
+                    self.faults.append(f)
+                    if self.on_fault:
+                        self.on_fault(f)
+            elif tag == P.HT_PMU:
+                *ev, h.pmu_flags, h.pmu_auth = struct.unpack_from("<HHHHII", v)
+                h.pmu_events = tuple(ev)
             elif tag == P.HT_IRQ:
                 irq, prio, en, handler, arg = struct.unpack_from("<HBBII", v)
                 self.irqs[irq] = Irq(irq, prio, bool(en), handler, arg)

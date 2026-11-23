@@ -67,10 +67,16 @@ target addresses; the host names them from the ELF.
 | 0x62 | PLOT | | name (a string literal in rodata), signed 32-bit value (`ZPROF_PLOT("frame.margin_us", left)`) |
 | 0x63 | PRINT | | format (a string literal in rodata), three 32-bit arguments: integers and characters only, no `%s` or floats (`ZPROF_PRINT("seek to %u ms", ms)`); the host formats it |
 | 0x64 | TRIGGER | | why (the application's own code): something worth keeping happened (`ZPROF_TRIGGER(1)`); with the flight recorder armed it also freezes the ring (section 4c) |
+| 0x65 | FAULT | reason (`K_ERR_*`) | pc, thread, flags (1 ISR, 2 essential thread, 4 halted, 8 no call trace); the whole record is hello tag 15 (section 4e) |
 | 0x70 | METRIC | the metric's index in the hello's dictionary | value: a gauge's (signed), a counter's change since the last heartbeat, a timer's timestamp ticks since the last heartbeat (section 4b) |
 | 0x71 | THREAD_STATS | | thread, the kernel's execution cycles low, high: written by the sender once a second, so the host can check its per-thread CPU against the kernel's own count |
 | 0x72 | STACK | | thread, stack bytes never used, stack size: every 10th heartbeat (`CONFIG_ZPROF_STACK_DIVIDER`), with `CONFIG_INIT_STACKS` |
+| 0x73 | PMU | kind: 0 heartbeat, 1 after a SWITCH_OUT, 2 the counters restarted | the four PMU counts (32-bit, wrapping) of the events in hello tag 14 (section 4d) |
 | 0x7E | SYNC | | 64-bit kernel cycles, 32-bit timestamp, uptime ms |
+| 0x80 | ETH_RX | frame length | 14 words: the frame's first 56 bytes as the driver hands it up (section 4f) |
+| 0x81 | ETH_TX | frame length | time to transmit complete (bit 31: an error), then the frame's first 56 bytes |
+| 0x82 | I2C | address | device, flags << 16 \| length, duration, return code; with `CONFIG_ZPROF_BUS_I2C_DATA` also the first 8 data bytes |
+| 0x83 | DISK | 0 read, 1 write | the disk's name (rodata), first sector, sectors, duration, return code |
 | 0x7F | OVERFLOW | IPSR | records dropped, 64-bit kernel cycles, current thread |
 
 Thread pointers are reused after a thread ends: the host starts a new
@@ -100,7 +106,9 @@ name, priority, state, entry, stack base and size); the IRQ table (number,
 handler, argument, NVIC priority); the metric dictionary (tag 11, one entry
 per metric: `u16 index | u8 kind | u8 0 | name NUL unit`, kind 1 counter, 2
 gauge, 3 timer); the capture status (tag 12, section 4a); the flight
-recorder's status (tag 13, section 4c). A table ends with
+recorder's status (tag 13, section 4c); the PMU's events (tag 14, section
+4d); a fault no client has had yet (tag 15, section 4e); the buses recorded and
+recordable (tag 16, section 4f). A table ends with
 an END entry (0xFFFF); the thread table is sent again whenever it changes.
 
 Right after the hello, in its own control frame: the hook cost (tag 9, u32
@@ -122,6 +130,8 @@ without waiting; a frame longer than its 64-byte buffer is skipped.
 | 65 CT_CAPTURE | u32 ms to capture (0: until stopped or the buffer is full) | HT_CAPTURE (tag 12): `u32 state, u32 bytes held, u32 capacity, u32 ms recorded`; state 0 off, 1 recording, 2 uploading, 3 done, 4 no buffer |
 | 66 CT_CAPTURE_STOP | none | the capture ends and uploads |
 | 67 CT_RECORDER | u32 ms kept after a trigger (0: off) | HT_RECORDER (tag 13): `u32 state, u32 ms kept after a trigger, u32 triggers since boot, u32 bytes held`; state 0 off, 1 armed, 2 triggered, 3 holding a recording (section 4c) |
+| 68 CT_PMU | `u16 x4` Arm PMU event numbers (0xFFFF: keep), `u32` flags (bit 0: a PMU record at every switch) | HT_PMU (tag 14): `u16 x4` the events, `u32` flags, `u32` the PMU's AUTHSTATUS (section 4d) |
+| 69 CT_PROTO | `u32` the buses to record (1 Ethernet, 2 I2C, 4 disk) | HT_PROTO (tag 16): `u32` recorded now, `u32` this build can record (section 4f) |
 
 Every session starts recording all classes; the bridge sends the page's choice
 again at every connection (`presets.py`: Scheduling 0x00, Timing 0x02, Kernel
@@ -167,6 +177,76 @@ second HT_RECORDER, behind a session marker, so a run in flight at the freeze
 does not span the gap. A client connected while a trigger comes sees the
 TRIGGER live and the recorder stays armed; it records again once the client
 has gone. A reset loses it (the ring is in RAM).
+
+## 4d. PMU counts
+
+On an Armv8.1-M core with a PMU (`CONFIG_ZPROF_PMU`, opt-in on the Cortex-M55 and
+M85), the target counts four events at a time, each in a chained pair of the
+PMU's 16-bit event counters (the odd counter counts the even one's overflows),
+so a count is 32 bits and wraps. Every session starts with the default set:
+instructions (0x0008), instruction-cache refills (0x0001), data-cache
+refills (0x0003) and back-end stall cycles (0x0024); CT_PMU picks others and
+turns per-thread records on (the bridge's `--pmu` and `--pmu-threads`).
+
+A PMU record carries the four counts as they are now. The host takes the
+difference to the previous PMU record: at a heartbeat it is the window's
+total; a record of kind 1 comes right after a SWITCH_OUT, so its difference
+is the thread's that switched out (interrupts that ran on it included); kind
+2 follows a restart (new events) and is a new baseline, with no difference
+taken. A gap (an OVERFLOW, a new session) also starts a new baseline. Figures:
+instructions per cycle over the thread's run time (the timestamp counts core
+cycles), cycle events as a share of the run time, other events per 1000
+instructions, MVE instructions as a share of all.
+
+HT_PMU also carries the PMU's AUTHSTATUS: with secure non-invasive debug
+disabled (bits 7:6 = 2) the counters may not count secure code.
+
+## 4e. Faults
+
+`zprof_fault_capture()` (`CONFIG_ZPROF_FAULT`, off unless a build chooses it),
+called from a fatal error handler, keeps a record of 48 words (`struct
+zprof_fault`, `src/zprof_internal.h`):
+magic "FALT", length, the build id, uptime, the reason (`K_ERR_*`), flags, the
+thread and its name, r0-r3, r12, LR, PC and xPSR as stacked, r4-r11 and the PSP,
+the MSP and EXC_RETURN, HFSR and the fault address registers (Zephyr's handler
+has cleared the status bits by then: the reason says what kind it was), up to 8
+return addresses from Zephyr's unwinder (the MSP's frames for an interrupt; none
+on a stack overflow or a stack pointer outside its stack), the trace's timestamp
+and a CRC-32 (IEEE) of the rest. It puts a FAULT record in the trace and
+freezes an armed flight recorder at once.
+
+An application with its own `k_sys_fatal_error_handler` calls it there and
+keeps its own failure policy (flags: neither halted nor ran on). Only with
+`CONFIG_ZPROF_FAULT_HANDLER` does zprof supply the handler (Zephyr's is weak):
+it halts as Zephyr's own does (flag 4), or with `CONFIG_ZPROF_FAULT_CONTINUE`
+returns for a fault in a thread that is not essential (and not a panic), so the
+kernel ends only that thread and the target stays up to report it (flag 0x10).
+Both are off by default: adding zprof never changes how a device fails, and
+neither policy is safe for every system. The sender sends the record (HT_FAULT)
+and the brief log of the last four (HT_FAULT_LOG: count since boot, then uptime,
+reason and thread name each) to the connected client at once, and in every
+client's hello for as long as the board holds them (until a reset), so no
+client uses them up. A flight recording frozen by the fault goes to the first
+client only, as any held recording does (section 4c). A fault in an interrupt, in main or idle, or a panic halts as
+Zephyr's handler does: spinning with interrupts locked, so a probe can read
+`zprof_fault`. The record is in the DTCM's zeroed section: it outlives the
+fault, not a reset.
+
+## 4f. Buses (the protocol analyzer)
+
+Records of bus traffic (`CONFIG_ZPROF_BUS`, a build-time opt-in), each kind
+only while the host asks (CT_PROTO; every session starts with none, the bridge
+sends its choice again), and only what the build has (HT_PROTO's second word):
+received Ethernet frames from Zephyr's
+`net_recv_data` tracing hook; sent frames, I2C messages and disk transfers from
+link-time wraps of `eth_stm32_tx`, `i2c_stm32_transaction` and
+`disk_access_read`/`_write`. Ethernet is a build-time opt-in: frame headers
+name every host the target talks to, and the port has no login (README,
+"Security and privacy"). A record's time is the end of its transfer; the
+duration goes back to the start. Frames keep their first 56 bytes (Ethernet,
+IPv4 and TCP headers); zprof's own TCP stream is left out. The bridge exports the
+frames as pcapng (`export --pcapng`), each at its target time placed on the
+host's clock, with its direction.
 
 ## 4b. Heartbeat
 

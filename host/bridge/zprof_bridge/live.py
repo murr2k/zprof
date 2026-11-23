@@ -31,6 +31,7 @@ from . import proto as P
 from .analyze import CALL_NAMES, CLASS_NAMES, EXC_NAMES, ISR_CTX, Tracker, short_name
 from .elf import Elf
 from . import thresholds as TH
+from . import bus, fault, pmu
 from .presets import ALL, BY_ID, PRESETS, capture_frame, capture_stop_frame, classes_frame, preset_of
 from .timing import TimingTracker
 from .sched import JobTracker, analyze, build_model, job_marks, releases
@@ -70,6 +71,8 @@ class LiveSession:
         self.wall_bytes = 0
         # what the target records: the page's choice, applied to every new session
         self.want_classes: int | None = None
+        self.want_pmu: tuple | None = None   # (events or None, per-thread): CT_PMU at every session
+        self.want_proto: int = 0             # buses to record (CT_PROTO) at every session
         self.to_target = None        # send bytes to the target, while connected
         self._classes_seen: int | None = None
         self._reset_view()
@@ -121,6 +124,10 @@ class LiveSession:
         self.to_target = send
         if self.want_classes is not None:
             send(classes_frame(self.want_classes))
+        if self.want_pmu is not None:
+            send(pmu.frame(*self.want_pmu))
+        if self.want_proto:
+            send(bus.frame(self.want_proto))
 
     def set_classes(self, classes: int) -> None:
         """The page chose what the target records; it answers with what it records now."""
@@ -426,7 +433,31 @@ class LiveSession:
             "sw": {p: u.switches_in for p, u in tr.threads.items()},
             "irq": {i: (u.count, u.total) for i, u in tr.irqs.items()},
             "obj": {k: (sum(u.calls.values()), u.blocks, u.without) for k, u in tr.objects.items()},
+            "pmu": {p: tuple(u.pmu) for p, u in tr.threads.items()},
         }
+
+    def _faults(self) -> dict:
+        """Threads the target's fault handler ended: the count since boot and the last
+        ones, each with the function it faulted in when its full record came too."""
+        h = self.d.hello
+        full = {f.uptime_ms: f for f in self.d.faults}
+        rows = []
+        for up, reason, name in h.fault_log:
+            f = full.get(up)
+            where = (self.elf.name(f.pc & ~1) if self.elf and f else None) or (f"{f.pc:#010x}" if f else "")
+            rows.append({"t_s": up / 1000, "thread": name or "(interrupt)",
+                         "reason": fault.REASONS.get(reason, f"reason {reason}"), "where": where})
+        return {"count": h.fault_count, "rows": rows}
+
+    def _pmu_figs(self, prev: dict, now: dict, p: int, run: int) -> dict | None:
+        """A thread's PMU figures over the window (IPC, misses per 1000 instructions,
+        stall share), once the target sends a PMU record at every switch."""
+        ev = self.d.hello.pmu_events
+        if not ev or not self.tr.pmu_per_thread or run <= 0:
+            return None
+        a, b = prev.get("pmu", {}).get(p, (0, 0, 0, 0)), now["pmu"].get(p, (0, 0, 0, 0))
+        d = [y - x for x, y in zip(a, b)]
+        return pmu.figures(ev, d, run) if any(d) else None
 
     def _stats(self, t_end: int) -> dict:
         """The window from the last one's end to t_end (target time)."""
@@ -454,6 +485,7 @@ class LiveSession:
                 "wake_p99_us": sorted(lat)[int(0.99 * (len(lat) - 1))] if lat else None,
                 "wake_max_us": max(lat) if lat else None,
                 "sender": p == h.sender,
+                "pmu": self._pmu_figs(prev, now, p, run),
             })
         threads.sort(key=lambda x: -x["cpu_pct"])
         irqs = []
@@ -503,6 +535,10 @@ class LiveSession:
             "dropped": now["dropped"] - prev["dropped"], "dropped_total": now["dropped"],
             "self_pct": (sender["cpu_pct"] if sender else 0) + hooks_pct, "hooks_pct": hooks_pct,
             "threads": threads, "irqs": irqs, "objects": objects[:20],
+            "faults": self._faults(),
+            # the PMU figures' columns (key, heading), when threads have them
+            "pmu_cols": ([(k, pmu.label(k)) for k in pmu.figures(h.pmu_events, [1, 1, 1, 1], 1)]
+                         if any(x["pmu"] for x in threads) else []),
         }
 
 

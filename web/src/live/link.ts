@@ -160,6 +160,8 @@ export interface LiveThreadStat {
   wake_p99_us: number | null
   wake_max_us: number | null
   sender: boolean
+  /** PMU figures over the window (IPC, misses per 1000 instructions, stall share): with per-thread PMU counts on. */
+  pmu?: Record<string, number> | null
 }
 export interface LiveIrqStat { lane: number | null; name: string; per_s: number; cpu_pct: number; mean_us: number | null; max_us: number }
 export interface LiveObjStat {
@@ -195,6 +197,10 @@ export interface LiveStats {
   threads: LiveThreadStat[]
   irqs: LiveIrqStat[]
   objects?: LiveObjStat[]
+  /** The PMU figures' columns, [key, heading], when threads have them. */
+  pmu_cols?: [string, string][]
+  /** Threads the target's fault handler ended (the board ran on): count since boot, the last ones. */
+  faults?: { count: number; rows: { t_s: number; thread: string; reason: string; where: string }[] }
 }
 /** Timeline intervals, times in ms from the session start. */
 export interface IntervalBatch { n: number; t0: Float64Array; t1: Float64Array; lane: Uint16Array; code: Uint8Array; tMax: number }
