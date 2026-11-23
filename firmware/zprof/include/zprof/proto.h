@@ -88,6 +88,7 @@
 #define ZPROF_EV_MARK_STOP 0x61
 #define ZPROF_EV_PLOT 0x62  /* the series' name (rodata), a signed 32-bit value */
 #define ZPROF_EV_PRINT 0x63 /* the format (rodata), three 32-bit arguments (integers; no %s) */
+#define ZPROF_EV_TRIGGER 0x64 /* the application's trigger (ZPROF_TRIGGER): why */
 
 /* Heartbeat (every CONFIG_ZPROF_HEARTBEAT_MS): one METRIC record per metric, arg =
  * its index in the hello's dictionary; counters and timers count since the last. */
@@ -124,12 +125,23 @@
 #define ZPROF_HT_CLASSES 10  /* u32 mask of the kernel-object classes recorded (bit = id - 0x10) */
 #define ZPROF_HT_METRIC 11   /* u16 index, u8 kind, u8 0, name NUL unit (the metric dictionary) */
 #define ZPROF_HT_CAPTURE 12  /* u32 state, u32 bytes held, u32 capacity, u32 ms recorded (capture mode) */
+#define ZPROF_HT_RECORDER 13 /* u32 state, u32 ms kept after a trigger, u32 triggers since boot, u32 bytes held */
 #define ZPROF_HT_END 0xFFFF /* end of a hello or of a thread table update */
 
 /* Control TLV, host to target, in frames on the control channel. */
 #define ZPROF_CT_CLASSES 64 /* u32 mask of kernel-object classes to record; answered with HT_CLASSES */
 #define ZPROF_CT_CAPTURE 65 /* u32 ms (0: until stopped or full): record into the capture buffer, send nothing */
 #define ZPROF_CT_CAPTURE_STOP 66 /* end a capture now: upload what it holds */
+#define ZPROF_CT_RECORDER 67 /* u32 ms to keep recording after a trigger (0: off): the flight recorder; answered with HT_RECORDER */
+
+/* Flight recorder (HT_RECORDER's state). Armed, with no client connected, the
+ * hooks keep recording into the ring and drop its oldest whole records instead of
+ * the newest; a trigger (ZPROF_TRIGGER) freezes it the post time later, and the
+ * next client gets it first, as ordinary trace frames, before its own stream. */
+#define ZPROF_REC_OFF 0
+#define ZPROF_REC_ARMED 1
+#define ZPROF_REC_TRIGGERED 2 /* recording on for the post time */
+#define ZPROF_REC_HELD 3      /* frozen until a client takes it */
 
 /* Capture-then-upload (HT_CAPTURE's state). While recording only a status frame goes
  * out every 500 ms; then the buffer goes as ordinary trace frames, then DONE, and

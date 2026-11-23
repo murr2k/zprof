@@ -123,6 +123,7 @@ struct dict_ctx {
 };
 static void dict_entry(uint16_t index, const struct zprof_metric *m, void *user);
 static int cap_status(int s);
+static int rec_status(int s);
 
 static void thread_entry(const struct k_thread *t, void *user)
 {
@@ -211,7 +212,7 @@ static int hello(int s)
 	struct dict_ctx dc = {.s = s};
 
 	zprof_metric_dict(dict_entry, &dc);
-	if (dc.err || cap_status(s) < 0) {
+	if (dc.err || cap_status(s) < 0 || rec_status(s) < 0) {
 		return -EIO;
 	}
 	return thread_table(s, true, &threads_sig);
@@ -381,6 +382,19 @@ static int cap_finish(int s)
 	return 0;
 }
 
+/* The flight recorder's state: HT_RECORDER. */
+static int rec_status(int s)
+{
+	uint8_t v[16];
+	uint32_t held = zprof_rec.state == ZPROF_REC_HELD ? (zprof_ring.head - zprof_ring.tail) * 4u : 0u;
+
+	sys_put_le32(zprof_rec.state, &v[0]);
+	sys_put_le32(zprof_rec.post_ms, &v[4]);
+	sys_put_le32(zprof_rec.triggers, &v[8]);
+	sys_put_le32(held, &v[12]);
+	return (tlv(s, ZPROF_HT_RECORDER, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+}
+
 /* The metric dictionary in the hello: u16 index, u8 kind, u8 0, name NUL unit. */
 static void dict_entry(uint16_t index, const struct zprof_metric *m, void *user)
 {
@@ -436,6 +450,13 @@ static int control(int s, const uint8_t *p, size_t n)
 			}
 		} else if (tag == ZPROF_CT_CAPTURE_STOP) {
 			cap.stop = true;
+		} else if (tag == ZPROF_CT_RECORDER && len == 4u) {
+			/* takes effect when this client leaves: it records while nobody streams */
+			zprof_recorder_set(sys_get_le32(p + 4));
+			LOG_INF("flight recorder %s", zprof_rec.state == ZPROF_REC_OFF ? "off" : "armed");
+			if (rec_status(s) < 0) {
+				return -EIO;
+			}
 		}
 		p += 4u + len;
 		n -= 4u + len;
@@ -510,6 +531,21 @@ static void session(int s)
 
 	if (send_iov(s, &iov, 1) < 0 || hello(s) < 0) {
 		return;
+	}
+	/* A held flight recording goes first, as ordinary trace frames: the ring still
+	 * holds it (the hooks stopped at the freeze), ending with a SYNC the host places
+	 * it by. Then this session starts afresh; the recorder is armed again. */
+	if (zprof_rec.state == ZPROF_REC_HELD) {
+		uint32_t bytes = (zprof_ring.head - zprof_ring.tail) * 4u;
+
+		if (drain(s) < 0) {
+			return;
+		}
+		zprof_recorder_taken();
+		if (rec_status(s) < 0) {
+			return;
+		}
+		LOG_INF("flight recording sent: %u KB", bytes / 1024u);
 	}
 	/* what one hook costs, measured with the ring on, its records thrown away */
 	zprof_session(true);
@@ -662,6 +698,7 @@ static void sender(void *p1, void *p2, void *p3)
 		session(c);
 		zprof_session(false);
 		zsock_close(c);
+		zprof_recorder_resume();   /* nobody streams: the flight recorder records, if armed */
 	}
 }
 

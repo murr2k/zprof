@@ -23,7 +23,8 @@ struct zprof_ring {
 	volatile uint32_t tail;
 	volatile uint32_t dropped;     /* records lost since the last OVERFLOW record */
 	volatile uint32_t dropped_all; /* this session */
-	volatile bool on;              /* a session runs: the hooks record */
+	volatile bool on;              /* a session runs, or the flight recorder: the hooks record */
+	volatile bool overwrite;       /* the flight recorder: when full, drop the oldest records */
 	/* capture: while set, the hooks write here, from its start, instead of the ring;
 	 * nobody drains it, so nothing (no sender, no network) has to keep up with it */
 	uint32_t *volatile cap;
@@ -52,6 +53,23 @@ void zprof_session(bool on);
  * counted (the OVERFLOW after the capture says how many). */
 void zprof_capture_begin(uint32_t *buf, uint32_t words);
 uint32_t zprof_capture_end(void);
+
+/* The flight recorder (ZPROF_REC_*): armed, it records into the ring while no
+ * client is connected (the newest records stay), a trigger freezes it, and the
+ * next session sends it first. */
+struct zprof_recorder {
+	volatile uint32_t state;   /* ZPROF_REC_* */
+	uint32_t post_ms;          /* recording goes on this long after a trigger */
+	volatile uint32_t triggers;
+};
+extern struct zprof_recorder zprof_rec;
+
+/* Arm (post_ms > 0) or turn off; armed, it records once no client is connected. */
+void zprof_recorder_set(uint32_t post_ms);
+/* No client any more (or at boot): record if armed. */
+void zprof_recorder_resume(void);
+/* A session took the held recording: armed again. */
+void zprof_recorder_taken(void);
 
 uint32_t zprof_ts_hz(void);
 

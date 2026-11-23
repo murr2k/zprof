@@ -116,8 +116,9 @@ class TimingTracker:
                 if s is None:
                     s = self.plots[name] = Series(self.keep * 4)
                 s.add(self._ms(r.t), float(v))
-            elif rid == P.EV_PRINT:
-                text = cformat(self._str(r.w[0]), tuple(r.w[1:4]))
+            elif rid in (P.EV_PRINT, P.EV_TRIGGER):
+                text = (cformat(self._str(r.w[0]), tuple(r.w[1:4])) if rid == P.EV_PRINT
+                        else f"TRIGGER {r.w[0] if r.w else 0}")
                 who = "ISR" if self._isr else (self.thread_name(self.cur) if self.cur is not None else "?")
                 item = (self._ms(r.t), who, text)
                 self.prints.append(item)

@@ -9,7 +9,7 @@ serves a GPU dashboard built on [Sferic](https://github.com/murr2k/sferic-charts
 
 ![Live target: scheduler timeline, CPU by thread, interrupts and kernel objects of the STM32N6570-DK demo](docs/img/live-target.jpg)
 
-**Status (v0.4.1).** Tested on one target: the
+**Status (v0.5.0).** Tested on one target: the
 STM32N6570-DK (Cortex-M55 at 800 MHz) running Zephyr v4.4.0 and the
 [stm32n6-demo](https://github.com/murr2k/stm32n6-demo) (60 Hz LVGL display,
 2.7 ms audio refills, NPU, camera, H.264 encoder, Ethernet services). The
@@ -35,6 +35,7 @@ the STM32N6570-DK demo.
 | Kernel objects with wait reasons, owners and call sites (`file.c:line`) | See what each thread waits for and where, and tell idle rest from contention | A TCP connection's mutex contended up to 7.5 ms, partly by zprof's own sender: the tool reports its own effect too |
 | Event-loop shapes | An architecture check from the running system: active objects, wait points, handlers that block | Audio, microphone, Ethernet, player I/O, NPU and card watcher are active objects; main is a marked job loop with one wait point; the web and Home Power services are sequential loops with 3 to 10 wait points |
 | Capture-then-upload | A window with no trace traffic on the network at all, for the cases where streaming would disturb the measurement | 4 MB, 8 s of the attract lap with two 1.5 MB screenshots sent meanwhile: no record lost |
+| Flight recorder (`ZPROF_TRIGGER`) | Catch an event nobody can reproduce on demand: armed, the board records while nobody is connected and keeps the moments before the application's trigger for the next client | A dropped frame on Home: 0.4 s before it kept in the 64 KB ring, the frame's 35.9 ms named as the main thread's own work |
 | Recordings, a replay-equals-live check, Perfetto export | Regression evidence: compare builds run against run, and share a trace | 481,881 records decoded identically in different pieces |
 | A link that recovers by itself | Cable pulls, resets and reflashes need no restart of anything | Streaming resumed 0.5 s after a 4 s carrier drop, 0 records lost |
 | Names from the ELF, checked against a build id | No strings on the target, and a trace analysed against the wrong build is flagged | About 10 KB of flash and 7 KB of internal RAM; the 64 KB ring in the M55's DTCM |
@@ -79,17 +80,22 @@ the STM32N6570-DK demo.
   run time from the page (Scheduling, Timing, Kernel objects presets).
 - **Application data:** `ZPROF_MARK_START/STOP` around a job the kernel cannot
   see (a frame), `ZPROF_PLOT` values, `ZPROF_PRINT` lines (formatted on the
-  host), and metrics (counters, gauges, timers) latched by a heartbeat every
+  host), `ZPROF_TRIGGER` (a missed deadline, say: it freezes the flight
+  recorder), and metrics (counters, gauges, timers) latched by a heartbeat every
   100 ms, with each thread's stack watermark every tenth beat.
 - **Time:** the DWT cycle counter (it runs through WFI on the N6, measured),
   tied to the kernel's 64-bit cycle count every 250 ms; the host places every
   session on the target's clock since boot, so a reconnect continues the same
   timeline.
 
-Two ways to get it off the target: **streaming** (TCP 5560, one client; a
-broken link recovers by itself at both ends), or **capture-then-upload** (the
+Three ways to get it off the target: **streaming** (TCP 5560, one client; a
+broken link recovers by itself at both ends), **capture-then-upload** (the
 hooks write into a RAM buffer, nothing but a status goes on the network until
-the capture ends, then it uploads as an ordinary stream).
+the capture ends, then it uploads as an ordinary stream), or the **flight
+recorder** (armed, the hooks keep recording into the ring with nobody
+connected, the oldest records making room; `ZPROF_TRIGGER()` in the
+application freezes it shortly after, and the next client collects it first:
+[docs/PROTOCOL.md](docs/PROTOCOL.md) section 4c).
 
 ## What you see
 
@@ -109,6 +115,7 @@ From the command line, `python -m zprof_bridge`:
 |---|---|
 | `discover` | Finds boards (the stm32n6-demo's discovery query) |
 | `capture` | Records a session to a replayable `.zpr` (`--buffer`: capture-then-upload) |
+| `recorder` | The flight recorder: `arm` (`--post-ms`), `off`, `status`; a held recording is saved to a `.zpr` first, with how far before the trigger it reaches |
 | `summary` | Per-thread CPU, interrupts, wake latency, kernel objects, zprof's own cost |
 | `sched` | The schedulability analysis as text |
 | `check` | Replay equals live: a recording decoded in different pieces gives the same answers |
@@ -202,7 +209,7 @@ the ELF of the build that made it: the bridge checks a build id.
 
 Node.js 20 or newer and a browser with WebGL2 on a GPU (tested with Chrome).
 The dashboard imports Sferic from source, checked out beside this repository
-as `lightning` (zprof 0.4.1 is tested with Sferic's `main` at d115deb, the
+as `lightning` (zprof 0.5.0 is tested with Sferic's `main` at d115deb, the
 first commit with the sortable tables it needs):
 
 ```powershell

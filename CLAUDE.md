@@ -15,7 +15,7 @@ the dashboard in the browser. First target: the STM32N6570-DK running
 `docs/PLANS.md` section 0 (decisions, phases P0 to P5 and the first release
 R1 after P3); wire format: `docs/PROTOCOL.md`. Built so far: the firmware
 module (trace, kernel objects, capture presets from the host, capture-then-upload,
-metrics heartbeat, marks, plots, prints), the bridge (live, recordings, replay
+the flight recorder, metrics heartbeat, marks, plots, prints, triggers), the bridge (live, recordings, replay
 check, Perfetto export, schedulability analysis) and three live views (Live
 target, Schedulability: `docs/SCHEDULABILITY.md`, Timing); the other views are
 the mockup. Public since v0.3.0 (R1, 2026-11-22).
@@ -31,6 +31,8 @@ cd host\bridge
 ..\..\.venv\Scripts\python.exe -m zprof_bridge summary ..\..\captures\x.zpr   # decode a recording again
 #   capture --raw: record only (long sessions: a decoded tour is millions of events)
 #   capture --buffer: the target records into its own buffer (4 MB on the demo), nothing sent until it uploads at the end
+..\..\.venv\Scripts\python.exe -m zprof_bridge recorder arm --host 192.168.254.86 --post-ms 20   # flight recorder: records with nobody connected, a ZPROF_TRIGGER freezes it
+..\..\.venv\Scripts\python.exe -m zprof_bridge recorder status --host 192.168.254.86 -o ..\..\captures\f.zpr --elf <elf>   # collects a held recording first (any client does: it comes first in the stream)
 ..\..\.venv\Scripts\python.exe -m zprof_bridge check ..\..\captures\x.zpr     # replay equals live: the same answers whatever the pieces
 cd ..\..; .venv\Scripts\python.exe integrations\stm32n6-demo\p3check.py --host 192.168.254.86 --secs 20 --elf <kept elf> --demo <stm32n6-demo>   # P3 exit check (stop the bridge first: one session); cd host\bridge
 ..\..\.venv\Scripts\python.exe -m zprof_bridge export ..\..\captures\x.zpr     # Trace Event JSON for ui.perfetto.dev
@@ -92,6 +94,7 @@ cd web; npx tsc --noEmit       # must stay clean
 - **The tracing hooks never wake a thread or take a kernel lock; the sender polls the ring.** **Why:** a `k_sem_give` from a hook is itself traced, and `sched_ready`/`sched_pend` fire with the scheduler's spinlock held.
 - **A capture has the hooks write the capture buffer directly (`zprof_capture_begin`/`_end`); never copy the ring into it from the sender.** **Why:** the first version copied, and lost about 7,900 records at two screenshots in an 8 s capture on the N6: each 1.5 MB send makes about 2 MB/s of events while the cooperative network threads hold the sender off past the 64 KB ring. Written directly: none lost.
 - **The ring goes in the core's DTCM wherever the board chooses `zephyr,dtcm` (`CONFIG_ZPROF_RING_DTCM`, `__dtcm_bss_section` in `hooks.c`); only the CPU may touch it, and nothing may read a DTCM word before it was written.** **Why:** a TCM is wired to the core, so no DMA reaches it (the sender's `zsock_sendmsg` copies, flags 0; Zephyr's TCP has no zero-copy); the N6's DTCM has ECC on (MSCR 0x300A) and Zephyr's boot-time zeroing of `.dtcm_bss` is what initialises it. On the demo it gave back 64 KB of internal RAM (58 to 122 KB free); the hook cost did not change (170 ns), so it is a RAM measure, not a speed one.
+- **The flight recorder records only while no client is connected, writes the ring (never PSRAM), and drops whole records from its tail under the hooks' own irq lock (`put_locked`).** **Why:** a session's sender owns the tail while it streams, so the two must never run together (`zprof_session` ends overwrite mode, `zprof_recorder_resume` starts it once the client has gone). The ring is in the DTCM, so hours of recording cost the 170 ns hook and nothing more, where PSRAM writes from every hook would add cache-line fills that can wait behind the NPU and the camera (the demo's microphone ring showed what one PSRAM access costs a cooperative path). The price is history: 64 KB held 0.4 s on the demo's Home. The freeze ends with a SYNC and every session begins with one, so the host places both parts whatever lies between them.
 - **The bridge's full Timing snapshot (for a page that has just connected) leaves out the points still waiting for the next incremental message.** **Why:** they were sent twice: the page's frame marks ran 1 % ahead of `gfx.frames` until the snapshot stopped including them. Check new snapshot-plus-increment data the same way (`test_timing.py`).
 - **A zprof build turns off `TRACING_SYSCALL`, `TRACING_NETWORKING` and `TRACING_PM`.** **Why:** they default to y with `TRACING`; syscall tracing hooks every syscall site, and the network classes would trace zprof's own packets.
 - Simulated quantities stay honest: link bytes use the PLANS.md CTF costs, memory regions come from the pinned devicetree, and anything else synthetic is labelled so. **Why:** the mockup is used to argue design trade-offs (link budget, write safety); fudged numbers would argue the wrong way.

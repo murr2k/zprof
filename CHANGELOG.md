@@ -8,6 +8,30 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+## [0.5.0] - 2026-11-22
+
+### Added
+
+- The flight recorder, for an event nobody is watching for. Armed
+  (`zprof_bridge recorder arm`, or `CONFIG_ZPROF_RECORDER_POST_MS` at boot),
+  the hooks keep recording into the ring while no client is connected, the
+  oldest whole records making room; `ZPROF_TRIGGER(why)` in the application
+  freezes it a post time later (default 20 ms), and the next client gets the
+  recording first, as ordinary trace frames, then streams as usual.
+  `recorder status` and `arm` save it to a `.zpr` and say how far before the
+  trigger it reaches. Protocol: record TRIGGER (0x64), hello tag
+  HT_RECORDER (13), control CT_RECORDER (67) (docs/PROTOCOL.md section 4c).
+  A trigger in a live stream shows in the Timing view's prints. It records
+  into the ring (the DTCM on the N6), never PSRAM: the hook cost stays 170 ns
+  however long it runs, and the history is what the ring holds. On the
+  STM32N6570-DK, with the demo triggering on a dropped frame: 0.4 s of Home
+  kept before it (0.17 s in the busier regression tour), each frame named as
+  the main thread's own work; a full tour with it armed, 0 dropped frames and
+  0 audio underruns; 219 B more of internal RAM.
+- Every session starts with a SYNC, and the host takes the 32-bit stamp's
+  wrap from the kernel's count at every SYNC (as at an OVERFLOW), so a
+  stream that follows a gap is placed right.
+
 ## [0.4.1] - 2026-11-22
 
 ### Added
@@ -408,7 +432,8 @@ visualizations, an intelligence layer, and a safe write path to the target.
 - Thresholds file with JSON Schema: live alarms, run pass criteria, build gate.
 - Zephyr `main` pinned by SHA in `firmware/west.yml`.
 
-[Unreleased]: https://github.com/murr2k/zprof/compare/v0.4.1...HEAD
+[Unreleased]: https://github.com/murr2k/zprof/compare/v0.5.0...HEAD
+[0.5.0]: https://github.com/murr2k/zprof/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/murr2k/zprof/compare/v0.4.0...v0.4.1
 [0.4.0]: https://github.com/murr2k/zprof/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/murr2k/zprof/compare/v0.2.0...v0.3.0

@@ -63,6 +63,8 @@ class Hello:
     metrics: dict = field(default_factory=dict)   # index -> (name, kind, unit): the heartbeat's dictionary
     # capture-then-upload: state (CAP_*), bytes held, capacity (0: none), ms recorded; the last report
     capture: tuple = (0, 0, 0, 0)
+    # the flight recorder (REC_*): state, ms kept after a trigger, triggers since boot, bytes held
+    recorder: tuple = (0, 0, 0, 0)
 
 
 class StreamError(Exception):
@@ -89,6 +91,7 @@ class Decoder:
         self._last_abs: int | None = None
         self.on_session = None  # callback(kind): 'first', 'reconnect' or 'reboot', at its first SYNC
         self.on_capture = None  # callback((state, bytes, capacity, ms)): a capture status from the target
+        self.on_recorder = None  # callback((state, post_ms, triggers, held)): the flight recorder's status
         self._reset_session()
 
     def _reset_session(self) -> None:
@@ -191,6 +194,18 @@ class Decoder:
                 h.capture = struct.unpack_from("<IIII", v)
                 if self.on_capture:
                     self.on_capture(h.capture)
+            elif tag == P.HT_RECORDER:
+                was = h.recorder[0]
+                h.recorder = struct.unpack_from("<IIII", v)
+                if was == P.REC_HELD and h.recorder[0] != P.REC_HELD:
+                    # the held flight recording has been sent; the live stream that
+                    # follows is anchored afresh at its first SYNC, behind a session
+                    # marker (a run in flight at the freeze must not span the gap)
+                    self._t_last32 = None
+                    self._sync = None
+                    self._offset = None
+                if self.on_recorder:
+                    self.on_recorder(h.recorder)
             elif tag == P.HT_IRQ:
                 irq, prio, en, handler, arg = struct.unpack_from("<HBBII", v)
                 self.irqs[irq] = Irq(irq, prio, bool(en), handler, arg)
@@ -232,6 +247,14 @@ class Decoder:
                 self._t64 = ts + k * 2**32
             if rid == P.EV_SYNC and nw >= 2:
                 kc = w[0] | (w[1] << 32)
+                if self._sync is not None:
+                    # after a gap (a flight recording sent ahead of the live stream, a
+                    # long silence) the 32-bit stamp may have wrapped more than once:
+                    # the wrap the kernel's 64-bit count says, as at an OVERFLOW
+                    t_sync, kc_sync = self._sync
+                    h = self.hello
+                    expect = t_sync + (kc - kc_sync) * (h.ts_hz or 1) // (h.kcyc_hz or 1)
+                    self._t64 = ts + round((expect - ts) / 2**32) * 2**32
                 self._sync = (self._t64, kc)
                 if self._offset is None:
                     self._anchor(kc)

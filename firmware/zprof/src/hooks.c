@@ -87,6 +87,15 @@ static ZPROF_HOT void put_locked(uint32_t ts, uint8_t id, uint16_t arg, uint32_t
 	if (r->dropped != 0u) {
 		need += OVERFLOW_WORDS;
 	}
+	if (free < need && cap == NULL && r->overwrite) {
+		/* the flight recorder, nobody draining: the oldest whole records go */
+		while (free < need && r->tail != h) {
+			uint32_t n = ZPROF_REC_WORDS(ZPROF_REC_NW(r->w[(r->tail + 1u) & MASK]));
+
+			r->tail += n;
+			free += n;
+		}
+	}
 	if (free < need) {
 		r->dropped++;
 		r->dropped_all++;
@@ -178,19 +187,149 @@ void zprof_sync(void)
  * thread's next, unhooked wait. */
 static uint32_t site_window;
 
+/* ---- the flight recorder ----------------------------------------------------- */
+
+struct zprof_recorder zprof_rec;
+
+static void rec_sync(struct k_timer *t);
+static void rec_freeze(struct k_timer *t);
+/* SYNC records while it records with no client (the session's sender writes them
+ * otherwise): the host needs one inside whatever window the ring holds. */
+static K_TIMER_DEFINE(rec_sync_timer, rec_sync, NULL);
+static K_TIMER_DEFINE(rec_post_timer, rec_freeze, NULL);
+#define REC_SYNC_MS 100
+
+static void rec_sync(struct k_timer *t)
+{
+	ARG_UNUSED(t);
+	zprof_sync();
+}
+
+/* The post time is over: stop the hooks, the ring holds the moments around the
+ * trigger; a last SYNC first, so the host can place it whatever went before. */
+static void rec_freeze(struct k_timer *t)
+{
+	ARG_UNUSED(t);
+	if (zprof_rec.state != ZPROF_REC_TRIGGERED || !zprof_ring.overwrite) {
+		return;
+	}
+	k_timer_stop(&rec_sync_timer);
+	zprof_sync();
+
+	unsigned int key = arch_irq_lock();
+
+	zprof_ring.on = false;
+	zprof_ring.overwrite = false;
+	zprof_rec.state = ZPROF_REC_HELD;
+	arch_irq_unlock(key);
+}
+
+void zprof_trigger(uint32_t why)
+{
+	unsigned int key = arch_irq_lock();
+	bool start = false;
+
+	if (zprof_ring.on) {
+		put_locked(ts_now(), ZPROF_EV_TRIGGER, 0, 1, why, 0, 0, 0);
+	}
+	zprof_rec.triggers++;
+	if (zprof_rec.state == ZPROF_REC_ARMED && zprof_ring.overwrite) {
+		zprof_rec.state = ZPROF_REC_TRIGGERED;   /* the first one counts */
+		start = true;
+	}
+	arch_irq_unlock(key);
+	if (start) {
+		k_timer_start(&rec_post_timer, K_MSEC(zprof_rec.post_ms), K_NO_WAIT);
+	}
+}
+
+void zprof_recorder_set(uint32_t post_ms)
+{
+	if (post_ms == 0u) {
+		k_timer_stop(&rec_post_timer);
+		k_timer_stop(&rec_sync_timer);
+
+		unsigned int key = arch_irq_lock();
+
+		zprof_rec.state = ZPROF_REC_OFF;
+		if (zprof_ring.overwrite) {
+			zprof_ring.on = false;
+			zprof_ring.overwrite = false;
+		}
+		arch_irq_unlock(key);
+		return;
+	}
+	zprof_rec.post_ms = post_ms;
+	if (zprof_rec.state == ZPROF_REC_OFF) {
+		zprof_rec.state = ZPROF_REC_ARMED;
+	}
+}
+
+void zprof_recorder_resume(void)
+{
+	if (zprof_rec.state != ZPROF_REC_ARMED) {
+		return;   /* off, or a held recording waits for the next client */
+	}
+	unsigned int key = arch_irq_lock();
+
+	zprof_ring.cap = NULL;
+	zprof_ring.head = 0u;
+	zprof_ring.tail = 0u;
+	zprof_ring.dropped = 0u;
+	zprof_ring.dropped_all = 0u;
+	zprof_ring.overwrite = true;
+	zprof_ring.on = true;
+	arch_irq_unlock(key);
+	zprof_sync();
+	k_timer_start(&rec_sync_timer, K_MSEC(REC_SYNC_MS), K_MSEC(REC_SYNC_MS));
+}
+
+void zprof_recorder_taken(void)
+{
+	if (zprof_rec.state == ZPROF_REC_HELD) {
+		zprof_rec.state = ZPROF_REC_ARMED;
+	}
+}
+
+#if CONFIG_ZPROF_RECORDER_POST_MS > 0
+static int rec_boot(void)
+{
+	zprof_recorder_set(CONFIG_ZPROF_RECORDER_POST_MS);
+	zprof_recorder_resume();
+	return 0;
+}
+SYS_INIT(rec_boot, APPLICATION, 99);
+#endif
+
 void zprof_session(bool on)
 {
+	k_timer_stop(&rec_sync_timer);   /* a session's sender writes the SYNC records */
+	k_timer_stop(&rec_post_timer);
+
 	unsigned int key = arch_irq_lock();
 
 	site_window = zprof_ts_hz() / 5000u;
 	zprof_ring.on = false;
+	zprof_ring.overwrite = false;
 	zprof_ring.cap = NULL;      /* a capture ends with its session */
+	if (zprof_rec.state == ZPROF_REC_TRIGGERED ||
+	    (on && zprof_rec.state == ZPROF_REC_HELD)) {
+		/* a client came first: it streams the moment live (or the freeze came
+		 * after the session looked for a held recording: the reset below loses it) */
+		zprof_rec.state = ZPROF_REC_ARMED;
+	}
 	if (on) {
+		uint64_t kc = k_cycle_get_64();
+
 		zprof_ring.head = 0u;
 		zprof_ring.tail = 0u;
 		zprof_ring.dropped = 0u;
 		zprof_ring.dropped_all = 0u;
 		zprof_ring.on = true;
+		/* first, so the host can place everything after it, whatever went before
+		 * (a flight recording sent ahead of this stream, hours older) */
+		put_locked(ts_now(), ZPROF_EV_SYNC, 0, 3, (uint32_t)kc, (uint32_t)(kc >> 32),
+			   k_uptime_get_32(), 0);
 	}
 	arch_irq_unlock(key);
 }

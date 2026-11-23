@@ -196,3 +196,49 @@ def test_a_reconnect_continues_the_timeline_and_a_reboot_is_seen() -> None:
     rebooted.frame(P.CH_TRACE, Enc.sync(50, 1 * HZ))
     d.feed(bytes(rebooted.out))
     assert kinds[-1] == "reboot" and d.reboots == 1
+
+
+def test_a_flight_recording_then_the_live_stream() -> None:
+    """The held flight recording arrives first (hours old, its stamps wrapped many times
+    since), then the live session; both land on the target's clock, a session marker
+    between them, and the recording's TRIGGER where it happened."""
+    e = Enc()
+    rec = lambda st: Enc.tlv(P.HT_RECORDER, struct.pack("<IIII", st, 20, 1, 4096))
+    p = Enc.tlv(P.HT_CLOCKS, struct.pack("<III", HZ, HZ, P.TS_SRC_DWT))
+    p += rec(P.REC_HELD) + Enc.tlv(P.HT_THREAD, struct.pack("<IiIII", A, 0, 0, 0, 0) + b"main")
+    p += Enc.tlv(P.HT_END, b"")
+    e.frame(P.CH_CONTROL, p)
+    ms = HZ // 1000
+    k0 = 7 * HZ                                     # the recording: 7 s after boot
+    ts0 = 2**32 - 30 * ms                           # its stamps wrap in the middle
+    fl = Enc.rec(ts0 - ms, P.EV_SWITCH_IN, 0, A)    # before its first SYNC: held, then placed
+    fl += Enc.sync(ts0, k0)
+    fl += Enc.rec(ts0 + 40 * ms, P.EV_TRIGGER, 0, 1)
+    fl += Enc.sync(ts0 + 60 * ms, k0 + 60 * ms)     # the freeze's last SYNC
+    e.frame(P.CH_TRACE, fl)
+    e.frame(P.CH_CONTROL, rec(P.REC_ARMED))         # taken: armed again
+    k1 = k0 + 3600 * HZ                             # the live session, an hour later
+    e.frame(P.CH_TRACE, Enc.sync(123, k1) + Enc.rec(123 + ms, P.EV_IDLE))
+    d = Decoder()
+    seen = []
+    d.on_recorder = seen.append
+    data = bytes(e.out)
+    for i in range(0, len(data), 5):
+        d.feed(data[i:i + 5])
+    trig = next(r for r in d.records if r.id == P.EV_TRIGGER)
+    assert trig.t == k0 + 40 * ms
+    assert target_records(d)[0].t == k0 - ms
+    assert target_records(d)[-1].t == k1 + ms
+    marks = [i for i, r in enumerate(d.records) if r.id == EV_SESSION]
+    assert len(marks) == 2 and d.records[marks[1]].t == k1      # the live part behind its own marker
+    assert [s[0] for s in seen] == [P.REC_HELD, P.REC_ARMED]
+
+
+def test_a_sync_after_a_silence_takes_the_kernels_wrap() -> None:
+    e = Enc()
+    e.hello()
+    kc0 = 10**12
+    gap = 5 * 2**32 + 777                           # a stream silent across five wraps
+    e.frame(P.CH_TRACE, Enc.sync(100, kc0) + Enc.sync(100 + gap, kc0 + gap) + Enc.rec(200 + gap, P.EV_IDLE))
+    rs = target_records(run(e).d)
+    assert rs[1].t - rs[0].t == gap and rs[2].t - rs[1].t == 100

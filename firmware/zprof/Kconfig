@@ -33,6 +33,16 @@ config ZPROF_RING_SIZE
 	  thousand events a second 32 KB covers about 80 to 100 ms of a sender
 	  that cannot run.
 
+config ZPROF_RECORDER_POST_MS
+	int "Flight recorder armed at boot: ms recorded after a trigger (0: off)"
+	default 0
+	help
+	  Armed, with no client connected, the hooks keep recording into
+	  the ring (its oldest records go) and ZPROF_TRIGGER freezes it this
+	  long after; the next client collects it first. A host arms it at
+	  run time too (zprof_bridge recorder arm). The history it keeps is
+	  the ring's size at the event rate (64 KB: a fraction of a second).
+
 DT_CHOSEN_Z_DTCM := zephyr,dtcm
 
 config ZPROF_RING_DTCM

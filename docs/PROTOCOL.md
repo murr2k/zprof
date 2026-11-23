@@ -20,7 +20,7 @@ u8 channel | u8 flags | u16 seq | u32 len | payload[len]
 
 | Channel | Direction | Content |
 |---|---|---|
-| 0 | both | hello and statuses (target), control (host): CT_CLASSES, CT_CAPTURE, CT_CAPTURE_STOP (section 4a); later PARAM_SET (only behind the dashboard's arm switch) |
+| 0 | both | hello and statuses (target), control (host): CT_CLASSES, CT_CAPTURE, CT_CAPTURE_STOP, CT_RECORDER (sections 4a, 4c); later PARAM_SET (only behind the dashboard's arm switch) |
 | 1 | target | reserved (the heartbeat's METRIC records travel with the trace, on its clock: section 4b) |
 | 2 | target | trace (records, section 2), and a capture's upload |
 | 5 | target | heap calls (later) |
@@ -66,6 +66,7 @@ target addresses; the host names them from the ELF.
 | 0x61 | MARK_STOP | | name, value: 0 means nothing was done this time (no job), anything else completes the job (`ZPROF_MARK_STOP("frame", 1)`) |
 | 0x62 | PLOT | | name (a string literal in rodata), signed 32-bit value (`ZPROF_PLOT("frame.margin_us", left)`) |
 | 0x63 | PRINT | | format (a string literal in rodata), three 32-bit arguments: integers and characters only, no `%s` or floats (`ZPROF_PRINT("seek to %u ms", ms)`); the host formats it |
+| 0x64 | TRIGGER | | why (the application's own code): something worth keeping happened (`ZPROF_TRIGGER(1)`); with the flight recorder armed it also freezes the ring (section 4c) |
 | 0x70 | METRIC | the metric's index in the hello's dictionary | value: a gauge's (signed), a counter's change since the last heartbeat, a timer's timestamp ticks since the last heartbeat (section 4b) |
 | 0x71 | THREAD_STATS | | thread, the kernel's execution cycles low, high: written by the sender once a second, so the host can check its per-thread CPU against the kernel's own count |
 | 0x72 | STACK | | thread, stack bytes never used, stack size: every 10th heartbeat (`CONFIG_ZPROF_STACK_DIVIDER`), with `CONFIG_INIT_STACKS` |
@@ -98,7 +99,8 @@ size; enabled event classes; the sender thread; the thread table (pointer,
 name, priority, state, entry, stack base and size); the IRQ table (number,
 handler, argument, NVIC priority); the metric dictionary (tag 11, one entry
 per metric: `u16 index | u8 kind | u8 0 | name NUL unit`, kind 1 counter, 2
-gauge, 3 timer); the capture status (tag 12, section 4a). A table ends with
+gauge, 3 timer); the capture status (tag 12, section 4a); the flight
+recorder's status (tag 13, section 4c). A table ends with
 an END entry (0xFFFF); the thread table is sent again whenever it changes.
 
 Right after the hello, in its own control frame: the hook cost (tag 9, u32
@@ -119,6 +121,7 @@ without waiting; a frame longer than its 64-byte buffer is skipped.
 | 64 CT_CLASSES | u32 mask of the kernel-object classes to record (bit = id - 0x10) | HT_CLASSES with the mask now in effect, in a control frame |
 | 65 CT_CAPTURE | u32 ms to capture (0: until stopped or the buffer is full) | HT_CAPTURE (tag 12): `u32 state, u32 bytes held, u32 capacity, u32 ms recorded`; state 0 off, 1 recording, 2 uploading, 3 done, 4 no buffer |
 | 66 CT_CAPTURE_STOP | none | the capture ends and uploads |
+| 67 CT_RECORDER | u32 ms kept after a trigger (0: off) | HT_RECORDER (tag 13): `u32 state, u32 ms kept after a trigger, u32 triggers since boot, u32 bytes held`; state 0 off, 1 armed, 2 triggered, 3 holding a recording (section 4c) |
 
 Every session starts recording all classes; the bridge sends the page's choice
 again at every connection (`presets.py`: Scheduling 0x00, Timing 0x02, Kernel
@@ -140,6 +143,30 @@ screenshots sent meanwhile (each about 2 MB/s of events while it runs): a
 4 MB capture of 8 s with no record lost; moving the ring into the buffer
 from the sender, as the first version did, lost about 7,900 records at the
 screenshots, while the network stack held the sender off.
+
+## 4c. Flight recorder
+
+For an event nobody is watching for: a missed frame once an hour. Armed
+(CT_RECORDER, or `CONFIG_ZPROF_RECORDER_POST_MS` at boot), the recorder
+records whenever no client is connected: the hooks write the ring as in a
+session, and when it is full the oldest whole records go instead of the new
+one (no OVERFLOW), so it always holds the latest stretch, the ring's size at
+the event rate (64 KB at about 250 KB/s: a quarter of a second). A timer
+writes a SYNC every 100 ms meanwhile. The application's `ZPROF_TRIGGER()`
+writes a TRIGGER record; the first one while armed starts the post time,
+after which a last SYNC goes in and the hooks stop: the ring now holds the
+moments before the trigger and the post time after it (state 3), and keeps
+them across any number of later triggers (they are counted).
+
+The next client to connect gets it first: after the hello (whose HT_RECORDER
+says 3 and the bytes held), the ring as ordinary trace frames of whole
+records, then an HT_RECORDER with the recorder armed again, then the
+session as usual, beginning with a SYNC. The host places the recording at
+its first SYNC, as any session, and anchors the live part afresh after the
+second HT_RECORDER, behind a session marker, so a run in flight at the freeze
+does not span the gap. A client connected while a trigger comes sees the
+TRIGGER live and the recorder stays armed; it records again once the client
+has gone. A reset loses it (the ring is in RAM).
 
 ## 4b. Heartbeat
 

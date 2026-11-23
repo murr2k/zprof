@@ -23,6 +23,13 @@
  *   ZPROF_SET(level, v);          a gauge: the value now
  *   ZPROF_TIMER_START(busy); ... ZPROF_TIMER_STOP(busy);   time spent per heartbeat
  *
+ * Trigger: something worth keeping happened (a missed deadline). A TRIGGER record
+ * in a stream; with the flight recorder armed and no client connected, it also
+ * freezes the ring the recorder's post time later (the moments before it, and a
+ * little after), for the next client to collect.
+ *
+ *   ZPROF_TRIGGER(1);                     why: the application's own code
+ *
  * Names, formats and units must be string literals: only their addresses go over
  * the wire and the host reads the text from the ELF. A mark, plot or print is one
  * record (16 to 24 bytes), recorded with every capture preset.
@@ -46,11 +53,13 @@ extern "C" {
 void zprof_mark(uint8_t id, const char *name, uint32_t value);
 void zprof_plot(const char *name, int32_t value);
 void zprof_print(const char *fmt, uint32_t a0, uint32_t a1, uint32_t a2);
+void zprof_trigger(uint32_t why);
 
 #define ZPROF_MARK_START(name)       zprof_mark(ZPROF_EV_MARK_START, "" name, 0)
 #define ZPROF_MARK_STOP(name, value) zprof_mark(ZPROF_EV_MARK_STOP, "" name, (uint32_t)(value))
 #define ZPROF_PLOT(name, value)      zprof_plot("" name, (int32_t)(value))
 #define ZPROF_PRINT(fmt, ...)        Z_ZPROF_PRINT(fmt, ##__VA_ARGS__, 0, 0, 0)
+#define ZPROF_TRIGGER(why)           zprof_trigger((uint32_t)(why))
 #define Z_ZPROF_PRINT(fmt, a, b, c, ...) \
 	zprof_print("" fmt, (uint32_t)(uintptr_t)(a), (uint32_t)(uintptr_t)(b), (uint32_t)(uintptr_t)(c))
 

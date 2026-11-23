@@ -49,7 +49,8 @@ def cmd_discover(a: argparse.Namespace) -> None:
         print(f"{ip}  {kv.get('board', '?')}  prof={kv.get('prof', '(none)')}  fw={kv.get('fw', '?')}")
 
 
-def cmd_capture(a: argparse.Namespace) -> None:
+def _board(a: argparse.Namespace) -> tuple[str, int]:
+    """--host and --port, or the first board that answers discovery (one with zprof first)."""
     host, port = a.host, a.port
     if not host:
         boards = link.discover()
@@ -59,7 +60,78 @@ def cmd_capture(a: argparse.Namespace) -> None:
             sys.exit("no board found: give --host")
         if port is None and host in boards and "prof" in boards[host]:
             port = int(boards[host]["prof"])
-    port = port or link.DEFAULT_PORT
+    return host, port or link.DEFAULT_PORT
+
+
+REC_STATES = {P.REC_OFF: "off", P.REC_ARMED: "armed", P.REC_TRIGGERED: "triggered", P.REC_HELD: "holding a recording"}
+
+
+def cmd_recorder(a: argparse.Namespace) -> None:
+    """The flight recorder: collect what it holds (always first: the target sends it to
+    whoever connects), then arm it, turn it off, or only report it."""
+    host, port = _board(a)
+    d = Decoder()
+    got: list[bytes] = []
+    answers: list[tuple] = []
+    d.on_recorder = answers.append
+    s = link.connect(host, port)
+
+    def until(done, secs: float) -> bool:
+        t_end = time.time() + secs
+        while not done() and time.time() < t_end:
+            try:
+                data = s.recv(1 << 16)
+            except socket.timeout:
+                continue
+            if not data:
+                sys.exit("the target closed the session")
+            got.append(data)
+            d.feed(data)
+        return done()
+
+    try:
+        if not until(lambda: d.ready, 10):
+            sys.exit("no hello from the target")
+        st = d.hello.recorder
+        if st[0] == P.REC_HELD:
+            print(f"the recorder holds {st[3] / 1024:.0f} KB (trigger {st[2]} since boot): collecting it")
+            if not until(lambda: any(r[0] != P.REC_HELD for r in answers[1:]), 60):
+                sys.exit("the held recording did not arrive")
+            out = a.out or time.strftime("flight-%Y%m%d-%H%M%S.zpr")
+            meta = {"host": host, "port": port, "flight": True}
+            if a.elf:
+                meta |= {"elf": str(Path(a.elf).resolve()), "elf_sha256": record.sha256(Path(a.elf))}
+            w = record.Writer(out, meta)
+            for c in got:
+                w.chunk(c)
+            w.close()
+            trig = [r for r in d.records if r.id == P.EV_TRIGGER]
+            span = [r.t for r in d.records if r.id < 0x100]
+            hz = d.hello.ts_hz or 1
+            if trig and span:
+                t0 = trig[0].t
+                print(f"saved {out}: {(t0 - span[0]) / hz * 1e3:.0f} ms before the trigger (why {trig[0].w[0]}), "
+                      f"{t0 / hz:.3f} s after boot")
+            else:
+                print(f"saved {out} (no TRIGGER record in it: the ring lost it, or the trigger came first)")
+        if a.action in ("arm", "off"):
+            n = len(answers)
+            s.sendall(presets.recorder_frame(a.post_ms if a.action == "arm" else 0))
+            if not until(lambda: len(answers) > n, 5):
+                sys.exit("the target did not answer (a zprof without the flight recorder?)")
+            st = answers[-1]
+        else:
+            st = answers[-1] if answers else st
+        what = REC_STATES.get(st[0], f"state {st[0]}")
+        if st[0] == P.REC_ARMED:
+            what += f", {st[1]} ms kept after a trigger; it records once this client has gone"
+        print(f"{host}: flight recorder {what} ({st[2]} triggers since boot)")
+    finally:
+        s.close()
+
+
+def cmd_capture(a: argparse.Namespace) -> None:
+    host, port = _board(a)
     meta = {"host": host, "port": port}
     if a.elf:
         meta |= {"elf": str(Path(a.elf).resolve()), "elf_sha256": record.sha256(Path(a.elf))}
@@ -231,6 +303,15 @@ def main() -> None:
     sp.add_argument("--buffer", action="store_true",
                     help="capture-then-upload: the target records into its buffer and sends nothing until the end")
     sp.set_defaults(fn=cmd_capture)
+    sp = sub.add_parser("recorder", help="the flight recorder: arm, off, or status; collects what it holds first")
+    sp.add_argument("action", choices=("arm", "off", "status"))
+    sp.add_argument("--host")
+    sp.add_argument("--port", type=int)
+    sp.add_argument("--post-ms", type=int, default=20,
+                    help="recording kept after a trigger (the ring holds a few hundred ms in all)")
+    sp.add_argument("-o", "--out", help="where a held recording goes (default flight-<time>.zpr)")
+    sp.add_argument("--elf")
+    sp.set_defaults(fn=cmd_recorder)
     sp = sub.add_parser("check", help="replay equals live: a recording decoded as it arrived and in other pieces")
     sp.add_argument("recording")
     sp.add_argument("--elf")

@@ -55,3 +55,9 @@ def capture_frame(ms: int) -> bytes:
 
 def capture_stop_frame() -> bytes:
     return _frame(struct.pack("<HH", P.CT_CAPTURE_STOP, 0))
+
+
+def recorder_frame(post_ms: int) -> bytes:
+    """The flight recorder: armed with `post_ms` kept after a trigger (0: off);
+    answered with HT_RECORDER. It records once this client leaves."""
+    return _frame(struct.pack("<HHI", P.CT_RECORDER, 4, post_ms & 0xFFFFFFFF))
