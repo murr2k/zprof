@@ -1,6 +1,6 @@
 {
   "name": "zprof-web",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "private": true,
   "description": "zprof dashboard mockup on Sferic (synthetic data)",
   "type": "module",

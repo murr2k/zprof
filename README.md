@@ -9,7 +9,7 @@ serves a GPU dashboard built on [Sferic](https://github.com/murr2k/sferic-charts
 
 ![Live target: scheduler timeline, CPU by thread, interrupts and kernel objects of the STM32N6570-DK demo](docs/img/live-target.jpg)
 
-**Status (v0.3.0, first public release).** Tested on one target: the
+**Status (v0.4.0).** Tested on one target: the
 STM32N6570-DK (Cortex-M55 at 800 MHz) running Zephyr v4.4.0 and the
 [stm32n6-demo](https://github.com/murr2k/stm32n6-demo) (60 Hz LVGL display,
 2.7 ms audio refills, NPU, camera, H.264 encoder, Ethernet services). The
@@ -160,8 +160,8 @@ CONFIG_TRACING_PM=n
 ```
 
 Options are in `firmware/zprof/Kconfig` (ring size, sender priority, capture
-buffer size, heartbeat period); the demo's choices and why are in
-`integrations/stm32n6-demo/zprof.conf`. Marks, plots, prints and metrics:
+buffer size, heartbeat period); the demo's choices and why are in its
+`app/zprof.conf`. Marks, plots, prints and metrics:
 
 ```c
 #ifdef CONFIG_ZPROF
@@ -202,7 +202,7 @@ the ELF of the build that made it: the bridge checks a build id.
 
 Node.js 20 or newer and a browser with WebGL2 on a GPU (tested with Chrome).
 The dashboard imports Sferic from source, checked out beside this repository
-as `lightning` (zprof 0.3.0 is tested with Sferic's `main` at d115deb, the
+as `lightning` (zprof 0.4.0 is tested with Sferic's `main` at d115deb, the
 first commit with the sortable tables it needs):
 
 ```powershell
@@ -215,8 +215,10 @@ with `npx tsc --noEmit`.
 
 ### On the STM32N6570-DK
 
-The stm32n6-demo fetches zprof with `west update` and builds it into a
-separate build directory; its README has the commands.
+The stm32n6-demo includes zprof in every build: `west update` fetches it and
+the demo's CMakeLists adds the module with the demo's settings. Its README
+has the bridge's command; `integrations/stm32n6-demo/` here holds its
+deadlines and the P3 exit check.
 
 ## The mockup views
 

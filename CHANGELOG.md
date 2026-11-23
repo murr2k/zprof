@@ -8,6 +8,11 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+## [0.4.0] - 2026-11-22
+
+The scope-like trigger on the live timeline, and the stm32n6-demo's release
+build now includes zprof. The firmware module is the same as 0.3.0's.
+
 ### Added
 
 - The Live target timeline triggers like a scope: pick a lane in its
@@ -36,6 +41,12 @@ still the mockup on synthetic data.
   inversion is dropped when the thread that caused it can no longer block,
   and the cooperative bound follows the priorities given
   (`sched.blocking`); the plain analysis is unchanged.
+
+### Changed
+
+- The stm32n6-demo builds zprof into every firmware; its settings moved to
+  the demo (`app/zprof.conf`), so `integrations/stm32n6-demo/zprof.conf` is
+  gone. The demo's deadlines and the P3 exit check stay here.
 
 ## [0.3.0] - 2026-11-22
 
@@ -381,6 +392,7 @@ visualizations, an intelligence layer, and a safe write path to the target.
 - Thresholds file with JSON Schema: live alarms, run pass criteria, build gate.
 - Zephyr `main` pinned by SHA in `firmware/west.yml`.
 
-[Unreleased]: https://github.com/murr2k/zprof/compare/v0.3.0...HEAD
+[Unreleased]: https://github.com/murr2k/zprof/compare/v0.4.0...HEAD
+[0.4.0]: https://github.com/murr2k/zprof/compare/v0.3.0...v0.4.0
 [0.3.0]: https://github.com/murr2k/zprof/compare/v0.2.0...v0.3.0
 [0.2.0]: https://github.com/murr2k/zprof/releases/tag/v0.2.0
