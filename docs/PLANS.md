@@ -55,7 +55,12 @@ the refresh period (16,673 us), the drops the trace implies equal
 heartbeat (560 checked), and the audio thread's refill wakeups equal the DAC's
 blocks (22,300 of 22,300). R1 on 2026-11-22: v0.3.0, the repository made public
 (Apache-2.0, history kept: audited, nothing private in it), the demo fetching
-zprof with west. Next: P4.
+zprof with west.
+
+Status 2026-11-23: P4 done (0.5.0 flight recorder, 0.6.0 PMU and faults) but for
+a fault kept through a reset; P5's first slice in 0.6.0 (bus records); 0.7.0 adds
+spans (with LVGL's profiler points) and PC sampling, for where a frame's time
+goes. The README's roadmap has what is left.
 
 ## 1. Goal
 

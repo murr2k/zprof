@@ -10,6 +10,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+from . import prof
 from .analyze import Analysis
 
 PID_CPU, PID_THREADS, PID_IRQS = 1, 2, 3
@@ -69,6 +70,30 @@ def export(an: Analysis, path: str | Path) -> dict[str, int]:
     for t, n in an.drops:
         ev.append({"ph": "i", "s": "g", "pid": PID_CPU, "tid": 1, "ts": us(t),
                    "name": f"{n} trace records dropped"})
+
+    # spans on a track of their own under each thread (they span its preemptions,
+    # so they cannot nest in its run slices), PC samples as instants on another
+    spans, samples = prof.decode(an)
+    tid_of = {u.ptr: i for i, u in enumerate(order, start=1)}
+    extra: dict[tuple[int, str], int] = {}
+
+    def track(th: int, kind: str) -> int:
+        k = (th, kind)
+        if k not in extra:
+            extra[k] = 1000 + len(extra)
+            who = an.thread_name(th) if th else "interrupts"
+            meta(PID_THREADS, extra[k], f"{who} {kind}", sort=tid_of.get(th, 999) * 10 + len(kind))
+        return extra[k]
+
+    for s in spans:
+        ev.append({"ph": "X", "pid": PID_THREADS, "tid": track(s.thread, "spans"), "name": s.name,
+                   "ts": us(s.t0), "dur": round((s.t1 - s.t0) * 1e6 / hz, 3),
+                   "args": {"on_cpu_us": round(s.cpu * 1e6 / hz, 3), "level": s.depth}})
+    for s in samples:
+        ev.append({"ph": "i", "s": "t", "pid": PID_THREADS, "tid": track(s.thread if s.exc == 0 else 0, "samples"),
+                   "ts": us(s.t), "name": prof.func(an, s.pc),
+                   "args": {"in": prof.where(an, s), "pc": f"{s.pc:#010x}"}})
+    n_slices += len(spans)
 
     Path(path).parent.mkdir(parents=True, exist_ok=True)
     with open(path, "w", encoding="utf-8") as f:

@@ -17,7 +17,7 @@ from collections import Counter, defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from . import bus, fault, pmu
+from . import bus, fault, pmu, prof
 from . import proto as P
 from .elf import Elf
 from .stream import EV_SESSION, SESSION_KINDS, Decoder, Hello
@@ -553,6 +553,7 @@ def report(an: Analysis) -> str:
                      " without: returned without the object: a timeout, -EBUSY, an empty poll)")
 
     lines += bus.report(an)
+    lines += prof.report(an)
 
     chk = an.check_against_kernel()
     if chk:

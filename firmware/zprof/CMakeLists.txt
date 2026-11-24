@@ -27,6 +27,14 @@ if(CONFIG_ZPROF)
   zephyr_library_sources_ifdef(CONFIG_ZPROF_PMU src/pmu.c)
   zephyr_library_sources_ifdef(CONFIG_ZPROF_FAULT src/fault.c)
   zephyr_library_sources_ifdef(CONFIG_ZPROF_BUS src/bus.c)
+  zephyr_library_sources_ifdef(CONFIG_ZPROF_SPANS src/span.c)
+  zephyr_library_sources_ifdef(CONFIG_ZPROF_SAMPLE src/sample.c)
+  if(CONFIG_ZPROF_LVGL)
+    # LVGL's profiler macros into zprof spans (include/zprof/lvgl.h): global, so
+    # every file that includes LVGL's headers agrees; these win over LVGL's Kconfig
+    # values (lv_conf_internal.h takes a definition first)
+    zephyr_compile_definitions(LV_USE_PROFILER_BUILTIN=0 LV_PROFILER_INCLUDE="zprof/lvgl.h")
+  endif()
   # the protocol analyzer's wraps of driver functions (bus.c); each needs its driver
   if(CONFIG_ZPROF_BUS_ETH_STM32_TX)
     zephyr_ld_options(-Wl,--wrap=eth_stm32_tx)

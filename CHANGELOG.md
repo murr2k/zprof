@@ -8,6 +8,45 @@ still the mockup on synthetic data.
 
 ## [Unreleased]
 
+## [0.7.0] - 2026-11-23
+
+### Added
+
+- Spans (`CONFIG_ZPROF_SPANS`, opt-in): `ZPROF_SPAN_BEGIN("name")` /
+  `ZPROF_SPAN_END("name")` around work inside a thread's job, nested, and with
+  `CONFIG_ZPROF_LVGL` LVGL's own profiler points (layout, refresh, draw tasks,
+  events) with no change to LVGL. Recorded only while a host asks
+  (`--spans US[,DEPTH]` on capture and serve), and then only spans at least that
+  long: the target leaves the short ones out (LVGL blends every glyph), so a
+  frame's breakdown costs no more ring than the scheduler trace. `summary`
+  lists spans by name (count, total, the share their thread was on the CPU, self
+  time, mean, max) and the longest frames as span trees; `--frames-with NAME`
+  picks the frames holding a span of that name (a screen switch) and prints what
+  they are made of on average; the Perfetto export puts spans on a track under
+  each thread. Not recording, a span costs a load and a branch; recording, the
+  target times a begin and an end at every switch-on and the summary prints the
+  hooks' share, with the warning that the calls also slow the code around them
+  (on the demo a frame that draws a whole screen grew by a fifth).
+- PC sampling (`CONFIG_ZPROF_SAMPLE`, opt-in): a port's timer interrupt records
+  the interrupted PC, LR, exception and thread (`--sample HZ`). `summary` ranks
+  functions (with the context each ran in and, for leaf functions, the caller
+  from LR) and prints the handler's measured cost; the Perfetto export shows
+  each sample. The port supplies the timer (`zprof_port_sample_start`, `_stop`,
+  `_ack`) and connects `zprof_sample_irq` straight to the vector table.
+- Protocol: records SPAN (0x66) and SAMPLE (0x67), hello tags HT_SPANS (18) and
+  HT_SAMPLE (19), controls CT_SPANS (70) and CT_SAMPLE (71) (docs/PROTOCOL.md
+  section 4g).
+
+### Fixed
+
+- Code addresses in functions written in assembly without a `.size` (LVGL's
+  Helium blend routines) had no name: such a function now runs to the next one
+  (`Elf.function`).
+- `proto.h` named two hello tags `ZPROF_HT_PROTO` (1, the protocol version, and
+  16, the buses): the firmware sent its version under tag 16 and the bridge read
+  the buses' mask as the protocol version. Tag 16 is `ZPROF_HT_BUSES` now; the
+  bridge skips 0.6.0's short tag 16.
+
 ### Changed
 
 - Live target: the Threads table is wider (the CPU chart narrower), and with
@@ -490,7 +529,8 @@ visualizations, an intelligence layer, and a safe write path to the target.
 - Thresholds file with JSON Schema: live alarms, run pass criteria, build gate.
 - Zephyr `main` pinned by SHA in `firmware/west.yml`.
 
-[Unreleased]: https://github.com/murr2k/zprof/compare/v0.6.0...HEAD
+[Unreleased]: https://github.com/murr2k/zprof/compare/v0.7.0...HEAD
+[0.7.0]: https://github.com/murr2k/zprof/compare/v0.6.0...v0.7.0
 [0.6.0]: https://github.com/murr2k/zprof/compare/v0.5.0...v0.6.0
 [0.5.0]: https://github.com/murr2k/zprof/compare/v0.4.1...v0.5.0
 [0.4.1]: https://github.com/murr2k/zprof/compare/v0.4.0...v0.4.1

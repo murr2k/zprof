@@ -44,6 +44,17 @@ void zprof_put(uint8_t id, uint16_t arg, uint32_t nw, uint32_t a0, uint32_t a1, 
 /* A record of up to 15 payload words from an array (not for the hooks' path). */
 void zprof_put_n(uint8_t id, uint16_t arg, uint32_t nw, const uint32_t *p);
 
+/* Spans (span.c): on or off for this session, the shortest kept (ns), the deepest
+ * level kept; back, as HT_SPANS sends them: those three and what a begin and an end
+ * cost (ticks, measured at the switch-on). */
+void zprof_spans_set(bool on, uint32_t shortest_ns, uint32_t deepest);
+void zprof_spans_get(uint32_t v[4]);
+
+/* PC sampling (sample.c): the rate asked for (0: off); returns the rate set (0 if the
+ * port has no timer). get: rate, the handler's mean run (ticks), 1 (built in). */
+uint32_t zprof_sample_set(uint32_t hz);
+void zprof_sample_get(uint32_t v[3]);
+
 /* The protocol analyzer (bus.c): the buses recorded now, and those built in. */
 extern volatile uint32_t zprof_proto;
 extern const uint32_t zprof_proto_avail;

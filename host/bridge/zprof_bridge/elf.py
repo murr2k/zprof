@@ -48,6 +48,7 @@ class Elf:
         self._starts: list[int] = []
         self._syms: list[tuple[int, int, str]] = []  # (start, size, name)
         self.by_name: dict[str, tuple[int, int]] = {}
+        funcs = []
         with open(self.path, "rb") as f:
             elf = ELFFile(f)
             syms = []
@@ -61,6 +62,7 @@ class Elf:
                     addr = s["st_value"]
                     if kind == "STT_FUNC":
                         addr &= ~1  # Thumb bit
+                        funcs.append((addr, s["st_size"], s.name))
                     syms.append((addr, s["st_size"], s.name))
                     self.by_name.setdefault(s.name, (addr, s["st_size"]))
             self._segments = [
@@ -70,6 +72,16 @@ class Elf:
         syms.sort()
         self._syms = syms
         self._starts = [s[0] for s in syms]
+        # functions for code addresses (PC samples): one written in assembly without a
+        # .size (LVGL's Helium blends) has size 0 and is taken to run to the next one
+        funcs.sort()
+        self._funcs: list[tuple[int, int, str]] = []
+        for i, (a, n, name) in enumerate(funcs):
+            if n == 0:
+                nxt = next((b for b, _, _ in funcs[i + 1:] if b > a), a + 0x1000)
+                n = min(nxt - a, 0x1000)
+            self._funcs.append((a, a + n, name))
+        self._fstarts = [f[0] for f in self._funcs]
 
     def name(self, addr: int, exact_only: bool = False) -> str | None:
         """`symbol` or `symbol+0xoff` for an address inside a symbol, else None."""
@@ -81,6 +93,20 @@ class Elf:
                 return name
             if a < start + max(size, 1):
                 return None if exact_only else f"{name}+{a - start:#x}"
+            if a - start > 0x10000:
+                break
+            i -= 1
+        return None
+
+    def function(self, addr: int) -> str | None:
+        """The function a code address is in (functions only, zero-size ones running to
+        the next), else None."""
+        a = addr & ~1
+        i = bisect.bisect_right(self._fstarts, a) - 1
+        while i >= 0:
+            start, end, name = self._funcs[i]
+            if a < end:
+                return name
             if a - start > 0x10000:
                 break
             i -= 1

@@ -9,7 +9,7 @@ serves a GPU dashboard built on [Sferic](https://github.com/murr2k/sferic-charts
 
 ![Live target: scheduler timeline, CPU by thread, interrupts and kernel objects of the STM32N6570-DK demo](docs/img/live-target.jpg)
 
-**Status (v0.6.0).** Tested on one target: the
+**Status (v0.7.0).** Tested on one target: the
 STM32N6570-DK (Cortex-M55 at 800 MHz) running Zephyr v4.4.0 and the
 [stm32n6-demo](https://github.com/murr2k/stm32n6-demo) (60 Hz LVGL display,
 2.7 ms audio refills, NPU, camera, H.264 encoder, Ethernet services). The
@@ -38,6 +38,8 @@ the STM32N6570-DK demo.
 | The core's PMU, per thread (`--pmu-threads`) | Tell compute from waiting on memory: instructions per cycle, cache refills, stall share, Helium share, for each thread | Home's UI thread: IPC 0.42, 13 data-cache refills per 1000 instructions, a third of its cycles stalled in the back end (memory-bound frame fills); Signal Lab: 3 % of its instructions Helium, the audio threads none |
 | Faults captured (`fault`, opt-in) | The registers, the call trace named from the ELF and the moments before a fault reach the PC; the failure policy stays the application's (zprof's own handler, halting or running on, only if chosen) | The demo chose to run on: a divide by zero in a test thread was named to its source line, no frame was dropped, and its status bar, Settings, web remote and this dashboard listed the dead thread |
 | Bus records (`--proto i2c,disk`; Ethernet opt-in) | I2C messages, disk transfers and Ethernet frames on the trace's clock; the frames as pcapng for Wireshark | Camera screen: 26 I2C messages a second to the image sensor, the slowest 5.3 ms; a clip from the card: 0.61 MB/s of reads, the slowest 19 ms; Wireshark reads the export |
+| PC sampling (`--sample HZ`, opt-in) | A statistical profile by function, per thread and per interrupt, with the caller of leaf functions, from a timer interrupt the port supplies; it costs almost nothing, so frame times stay true | 4,000 samples a second for 0.13 % of the CPU (the handler's mean run, 0.3 us). Deck's first frames: 31 % fills and blends (LVGL's Helium routines), 27 % styles and the object tree, 18 % glyphs. LVGL 9.5's blur walk, which every invalidation runs over all objects, was 12 % of the UI thread on Home and Deck; nothing in the demo uses blur |
+| Spans (`--spans US[,DEPTH]`, opt-in) | What a frame is made of, as a tree: `ZPROF_SPAN_*` in the application and LVGL's own profiler points (layout, refresh, draw tasks, events) with no change to LVGL; the target leaves out spans shorter than asked | A Deck first frame makes 3,976 spans, 550 of 20 us or more kept; 42 labels drawn take 4.2 ms. Spans slow the code they measure (Deck's first frame, 12.9 ms, takes 15.4 ms while LVGL's points record): read them for structure, time frames without them |
 | Flight recorder (`ZPROF_TRIGGER`) | Catch an event nobody can reproduce on demand: armed, the board records while nobody is connected and keeps the moments before the application's trigger for the next client | A dropped frame on Home: 0.4 s before it kept in the 64 KB ring, the frame's 35.9 ms named as the main thread's own work |
 | Recordings, a replay-equals-live check, Perfetto export | Regression evidence: compare builds run against run, and share a trace | 481,881 records decoded identically in different pieces |
 | A link that recovers by itself | Cable pulls, resets and reflashes need no restart of anything | Streaming resumed 0.5 s after a 4 s carrier drop, 0 records lost |
@@ -76,7 +78,8 @@ the STM32N6570-DK demo.
   may include data the faulting code was handling.
 - **Beyond the scheduler, everything is opt-in at build time:** the PMU
   (zprof takes it over), fault capture and its handler, the bus records and
-  their wraps of driver functions. Adding zprof records thread switches,
+  their wraps of driver functions, spans (and LVGL's profiler points as spans),
+  PC sampling and its timer interrupt. Adding zprof records thread switches,
   interrupts, kernel objects and metrics, and changes nothing else.
 - **Ethernet capture is a build-time opt-in** (`CONFIG_ZPROF_BUS_ETH_RX`,
   `CONFIG_ZPROF_BUS_ETH_STM32_TX`, both off by default). Frame headers name
@@ -130,6 +133,10 @@ the STM32N6570-DK demo.
   on, unless it is an interrupt, main or idle.
 - **Buses, on request:** I2C messages, disk transfers and (built in by choice)
   Ethernet frame headers.
+- **Inside a frame, on request (opt-in):** PC samples from a timer of the
+  port's (where the CPU was, in which thread or interrupt), and spans
+  (`ZPROF_SPAN_BEGIN/END`, and LVGL's own profiler points) of at least the
+  length asked for, as a tree.
 - **Time:** the DWT cycle counter (it runs through WFI on the N6, measured),
   tied to the kernel's 64-bit cycle count every 250 ms; the host places every
   session on the target's clock since boot, so a reconnect continues the same
@@ -164,9 +171,9 @@ From the command line, `python -m zprof_bridge`:
 | `capture` | Records a session to a replayable `.zpr` (`--buffer`: capture-then-upload) |
 | `recorder` | The flight recorder: `arm` (`--post-ms`), `off`, `status`; a held recording is saved to a `.zpr` first, with how far before the trigger it reaches |
 | `fault` | A fault the target holds: reason, thread, PC, LR and the call trace named from the ELF, saved with the frozen ring; `--wait` shows faults as they come |
-| `capture`, `serve` options | `--pmu cache\|helium` and `--pmu-threads` (PMU counts per thread), `--proto eth,i2c,disk\|all` (bus records) |
+| `capture`, `serve` options | `--pmu cache\|helium` and `--pmu-threads` (PMU counts per thread), `--proto eth,i2c,disk\|all` (bus records), `--spans US[,DEPTH]` (spans of at least US microseconds: `ZPROF_SPAN_*` and LVGL's profiler points), `--sample HZ` (PC samples) |
 | `export --pcapng` | A recording's Ethernet frames for Wireshark |
-| `summary` | Per-thread CPU, interrupts, wake latency, kernel objects, zprof's own cost |
+| `summary` | Per-thread CPU, interrupts, wake latency, kernel objects, zprof's own cost; with spans or samples: spans by name, functions by samples, and the longest frames as span trees |
 | `sched` | The schedulability analysis as text |
 | `check` | Replay equals live: a recording decoded in different pieces gives the same answers |
 | `export` | Trace Event JSON for [ui.perfetto.dev](https://ui.perfetto.dev) |
@@ -259,7 +266,7 @@ the ELF of the build that made it: the bridge checks a build id.
 
 Node.js 20 or newer and a browser with WebGL2 on a GPU (tested with Chrome).
 The dashboard imports Sferic from source, checked out beside this repository
-as `lightning` (zprof 0.6.0 is tested with Sferic's `main` at d115deb, the
+as `lightning` (zprof 0.7.0 is tested with Sferic's `main` at d115deb, the
 first commit with the sortable tables it needs):
 
 ```powershell
@@ -361,6 +368,9 @@ Tests: `cd host\bridge; ..\..\.venv\Scripts\python -m pytest -q tests`.
   the target running on. Left: a fault that halts the target, kept through a
   reset and reported at the next boot (it needs a retained record a cold boot
   initialises, and flash boot: development boot parks the chip in the ROM).
+- **Inside a frame:** spans (LVGL's profiler points among them) and PC sampling
+  in 0.7.0. Left: both in the live dashboard (the bridge's summary and the
+  Perfetto export show them today).
 - **P5, protocol analyzer:** first slice in 0.6.0: I2C and disk records,
   Ethernet frames (opt-in) as pcapng with target timestamps. Left: decoders
   for the demo's own protocols, a Protocol view.

@@ -90,6 +90,16 @@
 #define ZPROF_EV_PRINT 0x63 /* the format (rodata), three 32-bit arguments (integers; no %s) */
 #define ZPROF_EV_TRIGGER 0x64 /* the application's trigger (ZPROF_TRIGGER): why */
 #define ZPROF_EV_FAULT 0x65   /* arg reason (K_ERR_*); pc, thread, flags (ZPROF_FAULT_F_*): the record is HT_FAULT */
+/* Spans (zprof.h ZPROF_SPAN_*, LVGL's profiler points), only while the host asked
+ * for them (CT_SPANS): one record at a span's end, its time; arg the nesting level
+ * (0: outermost) in its thread; the name (rodata), the duration (timestamp ticks,
+ * wall time: preemption included). Shorter or deeper ones than asked are left out. */
+#define ZPROF_EV_SPAN 0x66
+/* A PC sample (CT_SAMPLE: a timer of the port's interrupts at a rate): arg the
+ * exception interrupted (0: a thread; else 16 + IRQ, or a system exception); the
+ * pc, the lr as stacked (the caller only in a leaf function), the thread. Samples
+ * inside irq_lock() land where the lock ends. */
+#define ZPROF_EV_SAMPLE 0x67
 
 /* Fault record flags (HT_FAULT, EV_FAULT). */
 #define ZPROF_FAULT_F_ISR 0x01       /* in an interrupt */
@@ -106,7 +116,7 @@
 #define ZPROF_EV_I2C 0x82    /* arg address; device, flags << 16 | length, duration, return code, the first 8 data bytes */
 #define ZPROF_EV_DISK 0x83   /* arg 0 read, 1 write; disk name (rodata), first sector, sectors, duration, return code */
 
-#define ZPROF_PROTO_ETH 1  /* CT_PROTO / HT_PROTO mask bits */
+#define ZPROF_PROTO_ETH 1  /* CT_PROTO / HT_BUSES mask bits */
 #define ZPROF_PROTO_I2C 2
 #define ZPROF_PROTO_DISK 4
 #define ZPROF_ETH_SNAP 56  /* bytes of each frame kept */
@@ -158,8 +168,10 @@
 #define ZPROF_HT_RECORDER 13 /* u32 state, u32 ms kept after a trigger, u32 triggers since boot, u32 bytes held */
 #define ZPROF_HT_PMU 14      /* u16 x4 the counted Arm PMU event numbers, u32 flags (ZPROF_PMU_F_*), u32 the PMU's AUTHSTATUS */
 #define ZPROF_HT_FAULT 15    /* the fault record (struct zprof_fault in fault.c, 48 u32 words) */
-#define ZPROF_HT_PROTO 16    /* u32 the buses recorded now (ZPROF_PROTO_*), u32 the ones this build can record */
+#define ZPROF_HT_BUSES 16    /* u32 the buses recorded now (ZPROF_PROTO_*), u32 the ones this build can record */
 #define ZPROF_HT_FAULT_LOG 17 /* u32 faults since boot, then up to 4 (newest first): u32 uptime ms, u32 reason, char[16] thread */
+#define ZPROF_HT_SPANS 18    /* u32 recorded now (0/1), u32 shortest kept (ns), u32 deepest level kept, u32 ticks a begin and an end cost (measured at the switch-on) */
+#define ZPROF_HT_SAMPLE 19   /* u32 rate now (Hz, 0: off), u32 the handler's mean run (ticks; sent every second while sampling), u32 1: this build samples */
 #define ZPROF_FAULT_MAGIC 0x544C4146 /* "FALT", the record's first word */
 #define ZPROF_FAULT_FRAMES 8 /* return addresses kept */
 #define ZPROF_HT_END 0xFFFF /* end of a hello or of a thread table update */
@@ -170,7 +182,9 @@
 #define ZPROF_CT_CAPTURE_STOP 66 /* end a capture now: upload what it holds */
 #define ZPROF_CT_RECORDER 67 /* u32 ms to keep recording after a trigger (0: off): the flight recorder; answered with HT_RECORDER */
 #define ZPROF_CT_PMU 68      /* u16 x4 Arm PMU event numbers (0xFFFF: keep), u32 flags (ZPROF_PMU_F_*); answered with HT_PMU */
-#define ZPROF_CT_PROTO 69    /* u32 the buses to record (ZPROF_PROTO_*; every session starts with none); answered with HT_PROTO */
+#define ZPROF_CT_PROTO 69    /* u32 the buses to record (ZPROF_PROTO_*; every session starts with none); answered with HT_BUSES */
+#define ZPROF_CT_SPANS 70    /* u32 on, u32 shortest span kept (ns), u32 deepest level kept (every session starts with none); answered with HT_SPANS */
+#define ZPROF_CT_SAMPLE 71   /* u32 PC samples a second (0: off; every session starts off); answered with HT_SAMPLE */
 
 /* Flight recorder (HT_RECORDER's state). Armed, with no client connected, the
  * hooks keep recording into the ring and drop its oldest whole records instead of

@@ -156,6 +156,56 @@ config ZPROF_BUS_DISK
 
 endif # ZPROF_BUS
 
+config ZPROF_SPANS
+	bool "Spans: ZPROF_SPAN_BEGIN/END, recorded while a host asks"
+	help
+	  Off unless chosen. Named stretches of work inside a thread's job,
+	  nested, recorded only while a host asks for them (CT_SPANS; every
+	  session starts with none), and then only those at least as long
+	  and no deeper than it asks: one 16-byte record at each kept span's
+	  end, with its duration. Not recording, a span costs a load and a
+	  branch at each end.
+
+config ZPROF_SPAN_THREADS
+	int "Threads that can make spans at once"
+	default 4
+	depends on ZPROF_SPANS
+	help
+	  Each has a stack of 24 open spans (about 200 bytes); a thread
+	  finding none free makes no spans.
+
+config ZPROF_LVGL
+	bool "LVGL's profiler points as spans"
+	depends on ZPROF_SPANS && LVGL
+	select LV_USE_PROFILER
+	help
+	  Off unless chosen. LVGL's own profiler macros (layout, display
+	  refresh, draw tasks and units, events, image decoders, timers)
+	  become zprof spans: zprof's CMake makes zprof/lvgl.h LVGL's
+	  LV_PROFILER_INCLUDE and turns LVGL's built-in profiler off. Which
+	  categories are compiled in is LVGL's choice (CONFIG_LV_PROFILER_*;
+	  the font, cache and file system points run per glyph or per
+	  access, worth leaving out). Changes the LVGL build: every LVGL
+	  source is compiled again. While recording, the draw and event
+	  points run thousands of times in a frame that draws a whole
+	  screen (per glyph, per object event), and each call also costs
+	  the LVGL code around it: on the STM32N6 demo such a frame grew
+	  by a fifth. Read spans for what a frame is made of; time frames
+	  without them.
+
+config ZPROF_SAMPLE
+	bool "PC sampling from a timer interrupt the port supplies"
+	depends on CPU_CORTEX_M && ARMV7_M_ARMV8_M_MAINLINE
+	help
+	  Off unless chosen. While a host asks (CT_SAMPLE, a rate; every
+	  session starts off), a timer interrupt records the interrupted
+	  PC, LR, exception and thread: a statistical profile by function,
+	  per thread and per interrupt. The port supplies the timer
+	  (zprof_port_sample_start, _stop, _ack in zprof.h) and connects
+	  zprof_sample_irq straight to the vector table at a priority
+	  irq_lock() masks. Each sample is a 20-byte record (80 KB/s at
+	  4 kHz) and costs the handler's run, which the host reports.
+
 DT_CHOSEN_Z_DTCM := zephyr,dtcm
 
 config ZPROF_RING_DTCM

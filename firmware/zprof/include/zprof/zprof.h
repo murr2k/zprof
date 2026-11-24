@@ -30,6 +30,14 @@
  *
  *   ZPROF_TRIGGER(1);                     why: the application's own code
  *
+ * Spans (CONFIG_ZPROF_SPANS): around a piece of work inside a job, nested freely,
+ * in threads (not in interrupts). Recorded only while a host asks for them
+ * (CT_SPANS), and then only those at least as long and no deeper than it asked:
+ * one record at the end. With CONFIG_ZPROF_LVGL, LVGL's own profiler points
+ * (layout, refresh, draw tasks, events) are spans too.
+ *
+ *   ZPROF_SPAN_BEGIN("shell.switch"); ... ZPROF_SPAN_END("shell.switch");
+ *
  * Names, formats and units must be string literals: only their addresses go over
  * the wire and the host reads the text from the ELF. A mark, plot or print is one
  * record (16 to 24 bytes), recorded with every capture preset.
@@ -72,6 +80,42 @@ const char *zprof_fault_reason(uint32_t reason);
  * application's own policy. Not needed with CONFIG_ZPROF_FAULT_HANDLER. */
 struct arch_esf;
 void zprof_fault_capture(unsigned int reason, const struct arch_esf *esf);
+#endif
+
+#ifdef CONFIG_ZPROF_SPANS
+/* Nonzero while a host records spans: the macros test it before the call, so a
+ * span costs a load and a branch otherwise. */
+extern volatile uint32_t zprof_span_on;
+void zprof_span_begin(const char *name);
+void zprof_span_end(const char *name);
+#define ZPROF_SPAN_BEGIN(name) do { if (zprof_span_on) { zprof_span_begin("" name); } } while (0)
+#define ZPROF_SPAN_END(name)   do { if (zprof_span_on) { zprof_span_end("" name); } } while (0)
+/* A name that is not a literal but a string in rodata (a const table's entry); the
+ * end must pass the same pointer. */
+#define ZPROF_SPAN_BEGIN_P(p)  do { if (zprof_span_on) { zprof_span_begin(p); } } while (0)
+#define ZPROF_SPAN_END_P(p)    do { if (zprof_span_on) { zprof_span_end(p); } } while (0)
+#else
+#define ZPROF_SPAN_BEGIN(name) do { } while (0)
+#define ZPROF_SPAN_END(name)   do { } while (0)
+#define ZPROF_SPAN_BEGIN_P(p)  do { (void)(p); } while (0)
+#define ZPROF_SPAN_END_P(p)    do { (void)(p); } while (0)
+#endif
+
+#ifdef CONFIG_ZPROF_SAMPLE
+/* PC sampling: the port's timer interrupt. zprof_sample_irq is its handler, installed
+ * in the vector table (IRQ_DIRECT_CONNECT) at a priority irq_lock() masks: it writes
+ * the ring under that lock, and reads the interrupted context from the exception
+ * frame, which only a handler entered straight from the vector table can find. */
+void zprof_sample_irq(void);
+/* Port hooks, weak in the module (no sampling unless the port supplies them):
+ * - start: interrupts at about hz from now on; returns the rate set, or < 0;
+ * - stop: no more interrupts;
+ * - ack: from the handler, clear the timer's request. A port should also vary each
+ *   period a little, so samples cannot fall into step with the application's own
+ *   periods (a frame, a tick). */
+int zprof_port_sample_start(uint32_t hz);
+void zprof_port_sample_stop(void);
+void zprof_port_sample_ack(void);
 #endif
 
 #define ZPROF_MARK_START(name)       zprof_mark(ZPROF_EV_MARK_START, "" name, 0)

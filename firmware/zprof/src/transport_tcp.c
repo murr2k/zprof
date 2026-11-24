@@ -127,6 +127,8 @@ static int rec_status(int s);
 static int pmu_status(int s);
 static int fault_status(int s, bool hello);
 static int proto_status(int s);
+static int spans_status(int s);
+static int sample_status(int s);
 
 static void thread_entry(const struct k_thread *t, void *user)
 {
@@ -216,7 +218,7 @@ static int hello(int s)
 
 	zprof_metric_dict(dict_entry, &dc);
 	if (dc.err || cap_status(s) < 0 || rec_status(s) < 0 || pmu_status(s) < 0 || fault_status(s, true) < 0 ||
-	    proto_status(s) < 0) {
+	    proto_status(s) < 0 || spans_status(s) < 0 || sample_status(s) < 0) {
 		return -EIO;
 	}
 	return thread_table(s, true, &threads_sig);
@@ -386,7 +388,7 @@ static int cap_finish(int s)
 	return 0;
 }
 
-/* The buses recorded now and those built in: HT_PROTO. */
+/* The buses recorded now and those built in: HT_BUSES. */
 static int proto_status(int s)
 {
 #ifdef CONFIG_ZPROF_BUS
@@ -394,10 +396,57 @@ static int proto_status(int s)
 
 	sys_put_le32(zprof_proto, &v[0]);
 	sys_put_le32(zprof_proto_avail, &v[4]);
-	return (tlv(s, ZPROF_HT_PROTO, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+	return (tlv(s, ZPROF_HT_BUSES, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
 #else
 	ARG_UNUSED(s);
 	return 0;
+#endif
+}
+
+/* Spans: on, the shortest kept, the deepest level kept, a begin and end's cost: HT_SPANS. */
+static int spans_status(int s)
+{
+#ifdef CONFIG_ZPROF_SPANS
+	uint32_t w[4];
+	uint8_t v[16];
+
+	zprof_spans_get(w);
+	for (int i = 0; i < 4; i++) {
+		sys_put_le32(w[i], &v[4 * i]);
+	}
+	return (tlv(s, ZPROF_HT_SPANS, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+#else
+	ARG_UNUSED(s);
+	return 0;
+#endif
+}
+
+/* PC sampling: the rate now, the handler's mean run, built in: HT_SAMPLE. */
+static int sample_status(int s)
+{
+#ifdef CONFIG_ZPROF_SAMPLE
+	uint32_t w[3];
+	uint8_t v[12];
+
+	zprof_sample_get(w);
+	for (int i = 0; i < 3; i++) {
+		sys_put_le32(w[i], &v[4 * i]);
+	}
+	return (tlv(s, ZPROF_HT_SAMPLE, v, sizeof(v)) < 0 || hflush(s) < 0) ? -EIO : 0;
+#else
+	ARG_UNUSED(s);
+	return 0;
+#endif
+}
+
+/* What the host turns on for a session only: off at its start and its end. */
+static void session_extras_off(void)
+{
+#ifdef CONFIG_ZPROF_SPANS
+	zprof_spans_set(false, 0u, UINT32_MAX);
+#endif
+#ifdef CONFIG_ZPROF_SAMPLE
+	zprof_sample_set(0u);
 #endif
 }
 
@@ -553,6 +602,22 @@ static int control(int s, const uint8_t *p, size_t n)
 				return -EIO;
 			}
 #endif
+#ifdef CONFIG_ZPROF_SPANS
+		} else if (tag == ZPROF_CT_SPANS && len == 12u) {
+			zprof_spans_set(sys_get_le32(p + 4) != 0u, sys_get_le32(p + 8), sys_get_le32(p + 12));
+			if (spans_status(s) < 0) {
+				return -EIO;
+			}
+#endif
+#ifdef CONFIG_ZPROF_SAMPLE
+		} else if (tag == ZPROF_CT_SAMPLE && len == 4u) {
+			uint32_t hz = zprof_sample_set(sys_get_le32(p + 4));
+
+			LOG_INF("PC sampling %u Hz", hz);
+			if (sample_status(s) < 0) {
+				return -EIO;
+			}
+#endif
 		}
 		p += 4u + len;
 		n -= 4u + len;
@@ -627,6 +692,7 @@ static void session(int s)
 #ifdef CONFIG_ZPROF_BUS
 	zprof_proto = 0u;       /* and no bus records until the host asks (they are bulky) */
 #endif
+	session_extras_off();   /* nor spans or PC samples */
 	sys_put_le16(ZPROF_PROTO_VERSION, &pre[4]);
 	sys_put_le16(0, &pre[6]);
 	struct iovec iov = {.iov_base = pre, .iov_len = sizeof(pre)};
@@ -723,6 +789,16 @@ static void session(int s)
 			uint32_t sig;
 
 			thread_stats();
+#ifdef CONFIG_ZPROF_SAMPLE
+			{
+				uint32_t w[3];
+
+				zprof_sample_get(w);
+				if (w[0] != 0u && sample_status(s) < 0) {   /* the handler's mean so far */
+					break;
+				}
+			}
+#endif
 			thread_table(s, false, &sig);
 			if (sig != threads_sig) {
 				threads_sig = sig;
@@ -802,6 +878,7 @@ static void sender(void *p1, void *p2, void *p3)
 		zsock_setsockopt(c, IPPROTO_TCP, ZSOCK_TCP_NODELAY, &one, sizeof(one));
 		LOG_INF("session started");
 		session(c);
+		session_extras_off();   /* no sampling interrupts with nobody to send them to */
 		zprof_session(false);
 		zsock_close(c);
 		zprof_recorder_resume();   /* nobody streams: the flight recorder records, if armed */

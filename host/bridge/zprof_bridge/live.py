@@ -31,7 +31,7 @@ from . import proto as P
 from .analyze import CALL_NAMES, CLASS_NAMES, EXC_NAMES, ISR_CTX, Tracker, short_name
 from .elf import Elf
 from . import thresholds as TH
-from . import bus, fault, pmu
+from . import bus, fault, pmu, prof
 from .presets import ALL, BY_ID, PRESETS, capture_frame, capture_stop_frame, classes_frame, preset_of
 from .timing import TimingTracker
 from .sched import JobTracker, analyze, build_model, job_marks, releases
@@ -73,6 +73,8 @@ class LiveSession:
         self.want_classes: int | None = None
         self.want_pmu: tuple | None = None   # (events or None, per-thread): CT_PMU at every session
         self.want_proto: int = 0             # buses to record (CT_PROTO) at every session
+        self.want_spans: tuple | None = None  # (shortest us, deepest level): CT_SPANS at every session
+        self.want_sample: int = 0            # PC samples a second (CT_SAMPLE) at every session
         self.to_target = None        # send bytes to the target, while connected
         self._classes_seen: int | None = None
         self._reset_view()
@@ -128,6 +130,10 @@ class LiveSession:
             send(pmu.frame(*self.want_pmu))
         if self.want_proto:
             send(bus.frame(self.want_proto))
+        if self.want_spans:
+            send(prof.spans_frame(True, *self.want_spans))
+        if self.want_sample:
+            send(prof.sample_frame(self.want_sample))
 
     def set_classes(self, classes: int) -> None:
         """The page chose what the target records; it answers with what it records now."""

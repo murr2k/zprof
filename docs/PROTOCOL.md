@@ -68,6 +68,8 @@ target addresses; the host names them from the ELF.
 | 0x63 | PRINT | | format (a string literal in rodata), three 32-bit arguments: integers and characters only, no `%s` or floats (`ZPROF_PRINT("seek to %u ms", ms)`); the host formats it |
 | 0x64 | TRIGGER | | why (the application's own code): something worth keeping happened (`ZPROF_TRIGGER(1)`); with the flight recorder armed it also freezes the ring (section 4c) |
 | 0x65 | FAULT | reason (`K_ERR_*`) | pc, thread, flags (1 ISR, 2 essential thread, 4 halted, 8 no call trace); the whole record is hello tag 15 (section 4e) |
+| 0x66 | SPAN | nesting level in its thread (0: outermost) | name (rodata), duration (timestamp ticks, wall time); written at the span's end, so its time is the end (section 4g) |
+| 0x67 | SAMPLE | the exception interrupted: 0 a thread, 16 + IRQ, or a system exception's number | pc, lr as stacked (the caller only in a leaf function), the running thread (section 4g) |
 | 0x70 | METRIC | the metric's index in the hello's dictionary | value: a gauge's (signed), a counter's change since the last heartbeat, a timer's timestamp ticks since the last heartbeat (section 4b) |
 | 0x71 | THREAD_STATS | | thread, the kernel's execution cycles low, high: written by the sender once a second, so the host can check its per-thread CPU against the kernel's own count |
 | 0x72 | STACK | | thread, stack bytes never used, stack size: every 10th heartbeat (`CONFIG_ZPROF_STACK_DIVIDER`), with `CONFIG_INIT_STACKS` |
@@ -108,7 +110,8 @@ per metric: `u16 index | u8 kind | u8 0 | name NUL unit`, kind 1 counter, 2
 gauge, 3 timer); the capture status (tag 12, section 4a); the flight
 recorder's status (tag 13, section 4c); the PMU's events (tag 14, section
 4d); a fault no client has had yet (tag 15, section 4e); the buses recorded and
-recordable (tag 16, section 4f). A table ends with
+recordable (tag 16, section 4f); spans and PC sampling (tags 18 and 19, section
+4g). A table ends with
 an END entry (0xFFFF); the thread table is sent again whenever it changes.
 
 Right after the hello, in its own control frame: the hook cost (tag 9, u32
@@ -131,7 +134,13 @@ without waiting; a frame longer than its 64-byte buffer is skipped.
 | 66 CT_CAPTURE_STOP | none | the capture ends and uploads |
 | 67 CT_RECORDER | u32 ms kept after a trigger (0: off) | HT_RECORDER (tag 13): `u32 state, u32 ms kept after a trigger, u32 triggers since boot, u32 bytes held`; state 0 off, 1 armed, 2 triggered, 3 holding a recording (section 4c) |
 | 68 CT_PMU | `u16 x4` Arm PMU event numbers (0xFFFF: keep), `u32` flags (bit 0: a PMU record at every switch) | HT_PMU (tag 14): `u16 x4` the events, `u32` flags, `u32` the PMU's AUTHSTATUS (section 4d) |
-| 69 CT_PROTO | `u32` the buses to record (1 Ethernet, 2 I2C, 4 disk) | HT_PROTO (tag 16): `u32` recorded now, `u32` this build can record (section 4f) |
+| 69 CT_PROTO | `u32` the buses to record (1 Ethernet, 2 I2C, 4 disk) | HT_BUSES (tag 16): `u32` recorded now, `u32` this build can record (section 4f) |
+| 70 CT_SPANS | `u32` on, `u32` the shortest span kept (ns), `u32` the deepest level kept | HT_SPANS (tag 18): `u32` on, `u32` shortest (ns), `u32` deepest, `u32` timestamp ticks a begin and an end cost, measured at the switch-on (section 4g) |
+| 71 CT_SAMPLE | `u32` PC samples a second (0: off) | HT_SAMPLE (tag 19): `u32` the rate set (0: off, or the port has no timer), `u32` the handler's mean run (timestamp ticks), `u32` 1 (built in); sent again every second while sampling (section 4g) |
+
+In zprof 0.6.0 the firmware's header gave tag 1 (HT_PROTO, the protocol version)
+and tag 16 (HT_BUSES) the same name, so 0.6.0 sends its version under tag 16 too
+(2 bytes); the bridge skips a tag 16 shorter than 8 bytes.
 
 Every session starts recording all classes; the bridge sends the page's choice
 again at every connection (`presets.py`: Scheduling 0x00, Timing 0x02, Kernel
@@ -236,7 +245,7 @@ fault, not a reset.
 
 Records of bus traffic (`CONFIG_ZPROF_BUS`, a build-time opt-in), each kind
 only while the host asks (CT_PROTO; every session starts with none, the bridge
-sends its choice again), and only what the build has (HT_PROTO's second word):
+sends its choice again), and only what the build has (HT_BUSES's second word):
 received Ethernet frames from Zephyr's
 `net_recv_data` tracing hook; sent frames, I2C messages and disk transfers from
 link-time wraps of `eth_stm32_tx`, `i2c_stm32_transaction` and
@@ -247,6 +256,39 @@ duration goes back to the start. Frames keep their first 56 bytes (Ethernet,
 IPv4 and TCP headers); zprof's own TCP stream is left out. The bridge exports the
 frames as pcapng (`export --pcapng`), each at its target time placed on the
 host's clock, with its direction.
+
+## 4g. Spans and PC samples
+
+Where the time goes inside a thread's job, each a build-time opt-in and each
+recorded only while the host asks (every session starts with neither).
+
+Spans (`CONFIG_ZPROF_SPANS`): `ZPROF_SPAN_BEGIN("name")` / `ZPROF_SPAN_END("name")`
+in the application, and with `CONFIG_ZPROF_LVGL` LVGL's own profiler points
+(layout, refresh, draw tasks and units, events; its tags are `__func__`, literals
+and names in rodata). A begin pushes its name and time on the thread's own stack
+(24 levels; `CONFIG_ZPROF_SPAN_THREADS` threads at once, none in interrupts); the
+end pops it and writes one SPAN record if the span lasted at least the shortest
+the host asked for (CT_SPANS, in ns) and is no deeper than asked. The others are
+counted in the heartbeat's metrics (`zprof.spans`, `zprof.spans_left_out`).
+Begin and end match by the name's address; an end whose begin came before the
+spans were on is dropped, and one that finds its begin a few levels down closes
+the levels above it (an end the code skipped). The duration is wall time: the
+host takes the thread's own share from the scheduler trace. Not recording, a
+span costs a load and a branch; recording, a begin and an end take no lock once
+the thread has its slot, and at every switch-on the target times them (the
+fastest of 8 runs of 16 pairs, HT_SPANS) so the host can print what the spans
+cost: every span the metrics count, kept or not, times that.
+
+PC samples (`CONFIG_ZPROF_SAMPLE`): the port's timer interrupts at the rate
+asked (CT_SAMPLE). Its handler, `zprof_sample_irq`, is connected straight to
+the vector table so EXC_RETURN tells it which stack holds the exception frame:
+the PC, the stacked LR and the exception number from the stacked xPSR (0: a
+thread) go into a SAMPLE record with the running thread. It runs at a priority
+`irq_lock()` masks, as every writer of the ring must, so a sample due in a
+locked region is taken where the lock ends. It is not in the ISR records; its
+mean run is in HT_SAMPLE, and the host prints rate x cost. A port should
+vary each period a little, so samples cannot lock to the application's own
+periods (the demo's TIM7 varies it by up to an eighth).
 
 ## 4b. Heartbeat
 

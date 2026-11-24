@@ -71,8 +71,12 @@ class Hello:
     pmu_flags: int = 0
     pmu_auth: int = 0
     # the protocol analyzer: buses recorded now and those the build can record (PROTO_*)
-    proto: int = 0
-    proto_avail: int = 0
+    buses: int = 0
+    buses_avail: int = 0
+    # spans: (recorded now, shortest kept in ticks, deepest level kept, built in); the last report
+    spans: tuple = (0, 0, 0, 0)
+    # PC sampling: (rate now in Hz, the handler's fastest run in ticks, built in); the last report
+    sample: tuple = (0, 0, 0)
     # threads the target's fault handler ended: faults since boot, the last ones
     # (uptime ms, reason, thread name), newest first
     fault_count: int = 0
@@ -224,8 +228,13 @@ class Decoder:
                 h.fault_count = struct.unpack_from("<I", v)[0]
                 h.fault_log = [(up, reason, name.split(b"\0", 1)[0].decode("utf-8", "replace"))
                                for up, reason, name in struct.iter_unpack("<II16s", v[4:])]
-            elif tag == P.HT_PROTO:
-                h.proto, h.proto_avail = struct.unpack_from("<II", v)
+            elif tag == P.HT_BUSES and len(v) >= 8:
+                # (zprof 0.6.0 also sent its protocol version under this tag, 2 bytes: skipped)
+                h.buses, h.buses_avail = struct.unpack_from("<II", v)
+            elif tag == P.HT_SPANS and len(v) >= 16:
+                h.spans = struct.unpack_from("<IIII", v)
+            elif tag == P.HT_SAMPLE and len(v) >= 12:
+                h.sample = struct.unpack_from("<III", v)
             elif tag == P.HT_FAULT:
                 f = fault.parse(v)
                 # every hello carries the fault the target holds: once is enough

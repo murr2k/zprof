@@ -9,6 +9,7 @@
   python -m zprof_bridge sched rec.zpr [--elf ...] [--irq-header ...] [--deadlines d.json]
   python -m zprof_bridge check rec.zpr        (replay equals live: the same answers whatever the pieces)
   python -m zprof_bridge capture --buffer --secs 10 -o rec.zpr   (capture-then-upload: nothing sent until the end)
+  python -m zprof_bridge capture --spans 20 --sample 4000 -o rec.zpr --elf ...   (where a frame's time goes)
   python -m zprof_bridge discover
 
 capture records a session to a .zpr file (the stream as received, replayable)
@@ -25,7 +26,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import bus, fault, link, pmu, presets, record
+from . import bus, fault, link, pmu, presets, prof, record
 from . import proto as P
 from . import thresholds as TH
 from .analyze import Analysis, irq_names_from_header, report
@@ -198,6 +199,10 @@ def cmd_capture(a: argparse.Namespace) -> None:
         s.sendall(pmu.frame(pmu.PRESETS[a.pmu] if a.pmu else None, a.pmu_threads))
     if a.proto:
         s.sendall(bus.frame(a.proto))
+    if a.spans:
+        s.sendall(prof.spans_frame(True, *a.spans))
+    if a.sample:
+        s.sendall(prof.sample_frame(a.sample))
     t_end = time.time() + a.secs
     ends: list[tuple] = []          # the target's capture status at the end (DONE or UNAVAILABLE)
     if a.buffer:
@@ -254,7 +259,9 @@ def cmd_summary(a: argparse.Namespace) -> None:
         print(f"(the recording's ELF {elf} is gone; names from the hello only)")
         elf = None
     a.elf = elf
-    print(report(_analysis(d, a)))
+    an = _analysis(d, a)
+    an.prof_opts = {"frames": a.frames, "frames_with": a.frames_with, "frame_us": a.frame_us}
+    print(report(an))
 
 
 def cmd_export(a: argparse.Namespace) -> None:
@@ -352,6 +359,8 @@ def cmd_serve(a: argparse.Namespace) -> None:
             s.want_pmu = (pmu.PRESETS[a.pmu] if a.pmu else None, a.pmu_threads)
         if a.proto:
             s.want_proto = a.proto
+        s.want_spans = a.spans
+        s.want_sample = a.sample or 0
         src = live.from_board(s, host, port, w)
     try:
         asyncio.run(live.serve(s, src, a.ws_port))
@@ -371,6 +380,12 @@ def _pmu_args(sp: argparse.ArgumentParser) -> None:
     sp.add_argument("--proto", type=bus.mask, metavar="eth,i2c,disk|all",
                     help="the protocol analyzer: record these buses (Ethernet frames, I2C messages, disk transfers)")
     sp.add_argument("--anonymize", action="store_true", help=ANON_HELP)
+    sp.add_argument("--spans", type=prof.spans_arg, metavar="US[,DEPTH]",
+                    help="record spans (ZPROF_SPAN_*, LVGL's profiler points) of at least US microseconds, "
+                         "no deeper than DEPTH (a build with CONFIG_ZPROF_SPANS)")
+    sp.add_argument("--sample", type=int, metavar="HZ",
+                    help="PC samples a second, from the port's timer (a build with CONFIG_ZPROF_SAMPLE; "
+                         "e.g. 4000)")
 
 
 def main() -> None:
@@ -416,6 +431,11 @@ def main() -> None:
     sp.add_argument("--elf")
     sp.add_argument("--irq-header")
     sp.add_argument("--anonymize", action="store_true", help=ANON_HELP)
+    sp.add_argument("--frames", type=int, default=3, help="the longest frames shown as span trees (0: none)")
+    sp.add_argument("--frames-with", metavar="SPAN",
+                    help="only frames holding a span of this name (the demo's screen switch span names the "
+                         "screen entered: its first frames), with what they are made of on average")
+    sp.add_argument("--frame-us", type=float, default=100.0, help="the shortest span in a frame's tree")
     sp.set_defaults(fn=cmd_summary)
     sp = sub.add_parser("export", help="Trace Event JSON for ui.perfetto.dev, or Ethernet frames as pcapng")
     sp.add_argument("recording")
